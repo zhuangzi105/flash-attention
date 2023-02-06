@@ -30,17 +30,8 @@
 #include <cuda.h>
 #include <vector>
 
-#ifdef OLD_GENERATOR_PATH
-#include <ATen/CUDAGeneratorImpl.h>
-#else
-#include <ATen/cuda/CUDAGeneratorImpl.h>
-#endif
-
-#include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/detail/UnpackRaw.cuh>
-
 #include <fmha_utils.h>
-
+#include "random_utils.h"
 
 constexpr int TOTAL_DIM = 0;
 constexpr int H_DIM = 1;
@@ -124,7 +115,7 @@ struct FMHA_fprop_params : public Qkv_params {
     uint32_t scale_dropout;
 
     // Random state.
-    at::PhiloxCudaState philox_args;
+    PhiloxCudaState philox_args;
 
     bool is_bf16;
     bool is_causal;

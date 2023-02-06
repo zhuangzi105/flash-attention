@@ -10,6 +10,7 @@
 #include "static_switch.h"
 #include "fmha.h"
 #include "fmha_fprop_kernel_1xN.h"
+#include "cuda_utils.h"
 
 // Find the number of splits that maximizes the occupancy. For example, if we have
 // batch * n_heads = 48 and we have 108 SMs, having 2 splits (efficiency = 0.89) is
@@ -73,7 +74,7 @@ void run_fmha_fwd_loop(Launch_params<FMHA_fprop_params> &launch_params) {
             int ctas_per_sm;
             cudaError status_ = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
                 &ctas_per_sm, kernel, Kernel_traits::THREADS, smem_size);
-            auto dprops = at::cuda::getCurrentDeviceProperties();
+            auto dprops = GetDeviceProperties(-1);
             // printf("CTAS_PER_SM = %d, nSMs = %d\n", ctas_per_sm, dprops->multiProcessorCount);
             constexpr int M = Kernel_traits::Cta_tile_p::M;
             launch_params.params.num_splits = num_splits_heuristic_fwd(

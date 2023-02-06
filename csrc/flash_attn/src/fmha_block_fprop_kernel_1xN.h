@@ -508,7 +508,7 @@ inline __device__ void device_block_1xN_loop(const Params &params) {
     const int tidx = threadIdx.x;
 
     const int tidx_global = (bidb * params.h + bidh) * blockDim.x * 2 + tidx;
-    auto seeds = at::cuda::philox::unpack(params.philox_args);
+    auto seeds = philox::unpack(params.philox_args);
     Philox ph0(std::get<0>(seeds), tidx_global, std::get<1>(seeds));
     Philox ph1(std::get<0>(seeds), tidx_global + blockDim.x, std::get<1>(seeds));
     constexpr int M = Kernel_traits::Cta_tile_p::M;

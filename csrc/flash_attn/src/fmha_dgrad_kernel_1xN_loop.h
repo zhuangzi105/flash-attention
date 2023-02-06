@@ -794,7 +794,7 @@ inline __device__ void compute_dq_dk_dv_1xN(const Params &params) {
     // The thread index.
     const int tidx = threadIdx.x;
 
-    auto seeds = at::cuda::philox::unpack(params.philox_args);
+    auto seeds = philox::unpack(params.philox_args);
     Philox ph(std::get<0>(seeds), 0, std::get<1>(seeds) + (bidb * params.h + bidh) * 32 + tidx % 32);
 
     if (loop_steps == 1) {
@@ -827,7 +827,7 @@ inline __device__ void compute_dq_dk_dv_seqparallel(const Params &params) {
     // The thread index.
     const int tidx = threadIdx.x;
 
-    auto seeds = at::cuda::philox::unpack(params.philox_args);
+    auto seeds = philox::unpack(params.philox_args);
     Philox ph(std::get<0>(seeds), 0, std::get<1>(seeds) + (bidb * params.h + bidh) * 32 + tidx % 32);
 
     int loop_step_idx = blockIdx.z;

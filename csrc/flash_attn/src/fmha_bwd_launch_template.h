@@ -5,6 +5,7 @@
 #include "static_switch.h"
 #include "fmha.h"
 #include "fmha_dgrad_kernel_1xN_loop.h"
+#include "cuda_utils.h"
 
 // Pick whether we should parallelize across seqlen_k (num_splits > 1) or not (num_splits=1).
 // Parallelizing will have better occupancy, but has some overhead due to having to zero out
@@ -88,7 +89,7 @@ void run_fmha_bwd_loop(FMHA_dgrad_params &params, cudaStream_t stream, const boo
             int ctas_per_sm;
             cudaError status_ = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
                 &ctas_per_sm, kernel, Kernel_traits::THREADS, smem_size_dq_dk_dv);
-            auto dprops = at::cuda::getCurrentDeviceProperties();
+            auto dprops = GetDeviceProperties(-1);
             // printf("CTAS_PER_SM = %d, nSMs = %d\n", ctas_per_sm, dprops->multiProcessorCount);
             constexpr int M = Kernel_traits::Cta_tile_p::M;
             // We don't want more than 10 splits due to numerical error.
