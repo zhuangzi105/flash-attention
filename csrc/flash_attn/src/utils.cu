@@ -34,7 +34,7 @@ static __global__ void _float2half(float *float_ptr, __half *half_ptr, size_t n)
 void Float2Half(void *float_ptr, void *half_ptr, size_t n, cudaStream_t stream) {
   constexpr auto kNumThreads = 1024;
   auto block = (n + kNumThreads - 1) / kNumThreads; 
-  _float2half<<<block, kNumThreads, 0, stream>>>(static_cast<float *>(float_ptr), static_cast<__half *>(float_ptr), n);
+  _float2half<<<block, kNumThreads, 0, stream>>>(static_cast<float *>(float_ptr), static_cast<__half *>(half_ptr), n);
 } 
 
 static __global__ void _float2bfloat16(float *float_ptr, __nv_bfloat16 *bf16_ptr, size_t n) {

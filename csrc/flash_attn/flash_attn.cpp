@@ -422,10 +422,14 @@ bool flash_attn_bwd(
     void *dq_tmp_ptr = workspace_ptr;
     // nullptr out to calculate workspace size
     if (out == nullptr) {
-        if (loop || num_splits > 1) {
-            *workspace_size = uint64_t(total_q) * num_heads * head_size * sizeof(float);
-        } else {
+        // There are two cases no need to allocate workspace:
+        // 1) num_splits == 1
+        // 2) num_splits == 0 for auto calculation, result to num_splits == 1
+        // we do allocation for case 2 for simplicity
+        if (num_splits == 1) {
             *workspace_size = 0;
+        } else {
+            *workspace_size = uint64_t(total_q) * num_heads * head_size * sizeof(float);
         }
         return true;
     }
@@ -462,14 +466,13 @@ bool flash_attn_bwd(
                      is_bf16,
                      num_splits);
 
+    // calculate and set params.num_splits if num_splits == 0
     launch(params, stream, /*configure=*/true);
 
     if (params.num_splits > 1) {
+        SetZero(dq_tmp_ptr, 4, {total_q, num_heads, head_size}, stream);
         if (!loop) {
-            SetZero(dq_tmp_ptr, 4, {total_q, num_heads, head_size}, stream);
             params.o_tmp_ptr = dq_tmp_ptr; // o_tmp stores dq_tmp in the backward pass
-        } else {
-            SetZero(dq_tmp_ptr, 4, {total_q, num_heads, head_size}, stream);
         }
     }
 
