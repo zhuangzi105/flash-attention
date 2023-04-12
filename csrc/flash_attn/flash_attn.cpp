@@ -426,7 +426,7 @@ bool flash_attn_bwd(
         // 1) num_splits == 1
         // 2) num_splits == 0 for auto calculation, result to num_splits == 1
         // we do allocation for case 2 for simplicity
-        if (num_splits == 1) {
+        if (num_splits == 1 && !loop) {
             *workspace_size = 0;
         } else {
             *workspace_size = uint64_t(total_q) * num_heads * head_size * sizeof(float);
