@@ -45,7 +45,7 @@
 #include <exception>
 #include <string>
 
-#define ASSERT_CHECK(__cond)                             \
+#define FLASH_ATTN_ASSERT_CHECK(__cond)                  \
       do {                                               \
         const bool __cond_var = (__cond);                \
         if (!__cond_var) {                               \
@@ -61,23 +61,6 @@
 extern "C" {
 #endif
 
-static thread_local std::unique_ptr<char[]> flash_attn_err_msg;
-
-void flash_attn_set_error(const char *msg) {
-  if (msg == nullptr || *msg == '\0') {
-    msg = "unknown error";
-  }
-
-  auto n = strlen(msg);
-  std::unique_ptr<char[]> new_err_msg(new char[n+1]);
-  std::strcpy(new_err_msg.get(), msg);
-  flash_attn_err_msg = std::move(new_err_msg);
-}
-
-const char *flash_attn_error() {
-  return flash_attn_err_msg.get();
-}
-
 #ifdef __cplusplus
 }
 #endif
@@ -85,7 +68,7 @@ const char *flash_attn_error() {
 #define FLASHATTNLIB_BEGIN_FUNC try {
 #define FLASHATTNLIB_END_FUNC } catch (::std::exception &__e) { flash_attn_set_error(__e.what()); return false; } catch (...) { flash_attn_set_error(nullptr); return false; }
 
-void set_params_fprop(FMHA_fprop_params &params,
+void set_params_fprop_with_bias_mask(FMHA_fprop_params &params,
                       // sizes
                       const size_t b,
                       const size_t seqlen_q,
@@ -97,8 +80,8 @@ void set_params_fprop(FMHA_fprop_params &params,
                       void *k,
                       void *v,
                       void *out,
-                      void *cu_seqlens_q_d,
-                      void *cu_seqlens_k_d,
+                      int32_t *cu_seqlens_q_d,
+                      int32_t *cu_seqlens_k_d,
                       void *o_tmp_d,
                       void *s_d,
                       void *softmax_lse_d,
@@ -106,8 +89,12 @@ void set_params_fprop(FMHA_fprop_params &params,
                       float softmax_scale,
                       bool is_causal,
                       bool is_bf16,
-                      int num_splits) {
-
+                      int num_splits,
+                      void *attn_mask = nullptr,
+                      void *attn_bias = nullptr,
+                      int bias_mod_size = 0,
+                      int mask_head_mod_size = 0,
+                      int mask_seq_mod_size = 0) {
     Data_type data_type = is_bf16 ? DATA_TYPE_BF16 : DATA_TYPE_FP16;
 
     // Reset the parameters
@@ -132,8 +119,8 @@ void set_params_fprop(FMHA_fprop_params &params,
     params.o_tmp_row_stride_in_elts = h * d;
     params.o_tmp_head_stride_in_elts = d;
 
-    params.cu_seqlens_q = static_cast<int *>(cu_seqlens_q_d);
-    params.cu_seqlens_k = static_cast<int *>(cu_seqlens_k_d);
+    params.cu_seqlens_q = cu_seqlens_q_d;
+    params.cu_seqlens_k = cu_seqlens_k_d;
 
     // S = softmax(P)
     params.s_ptr = s_d;
@@ -148,6 +135,13 @@ void set_params_fprop(FMHA_fprop_params &params,
     params.seqlen_q = seqlen_q;
     params.seqlen_k = seqlen_k;
     params.d = d;
+
+    // attn mask & bias
+    params.attn_mask_ptr = attn_mask;
+    params.attn_bias_ptr = attn_bias;
+    params.bias_mod_size = bias_mod_size;
+    params.mask_head_mod_size = mask_head_mod_size;
+    params.mask_seq_mod_size = mask_seq_mod_size;
 
     // Set the different scale values.
     // const float scale_bmm1 = 1.f / sqrtf(d);
@@ -164,30 +158,28 @@ void set_params_fprop(FMHA_fprop_params &params,
     params.p_dropout_in_uint16_t = uint16_t(std::floor(params.p_dropout * 65535.0));
     params.rp_dropout = 1.f / params.p_dropout;
     params.scale_bmm1_rp_dropout = params.rp_dropout * params.scale_bmm1f;
-    ASSERT_CHECK(p_dropout < 1.f);
+    FLASH_ATTN_ASSERT_CHECK(p_dropout < 1.f);
     set_alpha(params.scale_dropout, params.rp_dropout, data_type);
 
     params.is_causal = is_causal;
     params.num_splits = num_splits;
 }
 
-void set_params_dgrad(FMHA_dgrad_params &params,
-                      // sizes
-                      const size_t b,
+void set_params_dgrad_with_bias_mask(FMHA_dgrad_params &params,
+                      const size_t b, // sizes
                       const size_t seqlen_q,
                       const size_t seqlen_k,
                       const size_t h,
                       const size_t d,
-                      // device pointers
-                      void *q,
+                      void *q, // device pointers
                       void *k,
                       void *v,
                       void *out,
                       void *dq,
                       void *dk,
                       void *dv,
-                      void *cu_seqlens_q_d,
-                      void *cu_seqlens_k_d,
+                      int32_t *cu_seqlens_q_d,
+                      int32_t *cu_seqlens_k_d,
                       void *dq_tmp_d,
                       void *do_packed_d,
                       void *softmax_lse_d,
@@ -196,11 +188,23 @@ void set_params_dgrad(FMHA_dgrad_params &params,
                       float softmax_scale,
                       bool is_causal,
                       bool is_bf16,
-                      int num_splits) {
-
-    set_params_fprop(params,
-                     b, seqlen_q, seqlen_k, h, d,
-                     q, k, v, out,
+                      int num_splits,
+                      void *attn_mask = nullptr,
+                      void *attn_bias = nullptr,
+                      void *attn_ds = nullptr,
+                      int bias_mod_size = 0,
+                      int mask_head_mod_size = 0,
+                      int mask_seq_mod_size = 0) {
+    set_params_fprop_with_bias_mask(params,
+                     b, 
+                     seqlen_q,
+                     seqlen_k,
+                     h,
+                     d,
+                     q,
+                     k,
+                     v,
+                     out,
                      cu_seqlens_q_d,
                      cu_seqlens_k_d,
                      dq_tmp_d,  // Reusing the o_tmp_ptr variable to store dq_tmp
@@ -210,7 +214,12 @@ void set_params_dgrad(FMHA_dgrad_params &params,
                      softmax_scale,
                      is_causal,
                      is_bf16,
-                     num_splits);
+                     num_splits,
+                     attn_mask,
+                     attn_bias,
+                     bias_mod_size,
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
 
     // Set the pointers and strides.
     params.dq_ptr = dq;
@@ -226,41 +235,48 @@ void set_params_dgrad(FMHA_dgrad_params &params,
 
     // Softmax sum
     params.dsoftmax_sum = dsoftmax_sum_d;
+    params.attn_ds_ptr = attn_ds;
 }
 
-void run_fmha_fwd(Launch_params<FMHA_fprop_params> &launch_params) {
-    if (launch_params.params.d <= 32) {
-        run_fmha_fwd_hdim32(launch_params);
-    } else if (launch_params.params.d <= 64) {
-        run_fmha_fwd_hdim64(launch_params);
-    } else if (launch_params.params.d <= 128) {
-        run_fmha_fwd_hdim128(launch_params);
+void run_fwd_with_bias_mask(Launch_params<FMHA_fprop_params> &launch_params,
+                            const bool configure) {
+    if (launch_params.params.d == 16) {
+        run_fmha_fwd_with_mask_bias_hdim16(launch_params, configure);
+    } else if (launch_params.params.d == 32) {
+        run_fmha_fwd_with_mask_bias_hdim32(launch_params, configure);
+    } else if (launch_params.params.d == 64) {
+        run_fmha_fwd_with_mask_bias_hdim64(launch_params, configure);
+    } else if (launch_params.params.d == 128) {
+        run_fmha_fwd_with_mask_bias_hdim128(launch_params, configure);
     }
 }
 
-void run_fmha_bwd(FMHA_dgrad_params &params, cudaStream_t stream, const bool configure) {
-  if (params.d <= 32) {
-      run_fmha_bwd_hdim32(params, stream, configure);
-  } else if (params.d <= 64) {
-      run_fmha_bwd_hdim64(params, stream, configure);
-  } else if (params.d <= 128) {
-      run_fmha_bwd_hdim128(params, stream, configure);
+void run_bwd_with_bias_mask(FMHA_dgrad_params &params,
+                            cudaStream_t stream) {
+  if (params.d == 16) {
+      run_fmha_bwd_with_mask_bias_hdim16(params, stream);
+  } else if (params.d == 32) {
+      run_fmha_bwd_with_mask_bias_hdim32(params, stream);
+  } else if (params.d == 64) {
+      run_fmha_bwd_with_mask_bias_hdim64(params, stream);
+  } else if (params.d == 128) {
+      run_fmha_bwd_with_mask_bias_hdim128(params, stream);
   }
 }
-
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 
-bool flash_attn_fwd(
+// For just alphafold2
+bool flash_attn_fwd_with_bias_and_mask(
         const void *q,              // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
         const void *k,              // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
         const void *v,              // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
         void *out,                  // total_q x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
-        const void *cu_seqlens_q,   // int32, batch_size+1, starting offset of each sequence
-        const void *cu_seqlens_k,   // int32, batch_size+1, starting offset of each sequence
+        const int32_t *cu_seqlens_q,   // int32, batch_size+1, starting offset of each sequence
+        const int32_t *cu_seqlens_k,   // int32, batch_size+1, starting offset of each sequence
         const int total_q,
         const int total_k,
         const int batch_size,
@@ -273,26 +289,29 @@ bool flash_attn_fwd(
         const bool zero_tensors,
         const bool is_causal,
         const bool is_bf16,
-        const int num_splits,        // SMs per attention matrix, can be 1
+        const int  num_splits,        // SMs per attention matrix, can be 1
         void *softmax_lse_ptr,       // softmax log_sum_exp
         void *softmax_ptr,
         void *workspace_ptr,
         uint64_t *workspace_size,
         cudaStream_t stream,
         uint64_t seed,
-        uint64_t offset
-) {
+        uint64_t offset,
+        const void *attn_mask = nullptr,
+        const void *attn_bias = nullptr,
+        const int64_t* mask_dims = nullptr,
+        const int64_t* bias_dims = nullptr) {
     // printf("forward seed %jd offset %jd\b", seed, offset);
-    FLASHATTNLIB_BEGIN_FUNC 
+    FLASHATTNLIB_BEGIN_FUNC
 
     auto dprops = GetDeviceProperties(-1);
     bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
 
-    ASSERT_CHECK(is_sm8x || is_sm75);
-    ASSERT_CHECK(batch_size > 0);
-    ASSERT_CHECK((head_size % 8 == 0) && (head_size <= 128));
+    FLASH_ATTN_ASSERT_CHECK(is_sm8x || is_sm75);
+    FLASH_ATTN_ASSERT_CHECK(batch_size > 0);
+    FLASH_ATTN_ASSERT_CHECK((head_size % 8 == 0) && (head_size <= 128));
 
     int blocksize_c = head_size > 64 ? 128 : 256;
     // Need to round max_seqlen_k to multiples of blocksize_c
@@ -315,9 +334,19 @@ bool flash_attn_fwd(
         }
         return true;
     }
+    int bias_mod_size = attn_bias ? bias_dims[0] : 0;
+    if (attn_bias) {
+        FLASH_ATTN_ASSERT_CHECK(bias_dims[1] == num_heads);
+    }
+    int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
+    int mask_seq_mod_size  = attn_mask ? mask_dims[2] : 0;
+    if (attn_mask) {
+        FLASH_ATTN_ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
+        FLASH_ATTN_ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q_);
+    }
 
-    const bool return_softmax = (softmax_ptr != nullptr);
-    bool is_dropout = p_dropout > 0.0;
+    bool return_softmax = (softmax_ptr != nullptr);
+    bool is_dropout = p_dropout > 0.f;
     Launch_params<FMHA_fprop_params> launch_params(dprops, stream, is_dropout, return_softmax);
 
     if (zero_tensors) {
@@ -326,7 +355,7 @@ bool flash_attn_fwd(
         if (return_softmax) SetZero(softmax_ptr, 2, {batch_size, num_heads, max_seqlen_q, max_seqlen_k}, stream);  // float16
     }
 
-    set_params_fprop(launch_params.params,
+    set_params_fprop_with_bias_mask(launch_params.params,
                      batch_size,
                      max_seqlen_q,
                      max_seqlen_k,
@@ -336,8 +365,8 @@ bool flash_attn_fwd(
                      const_cast<void*>(k),
                      const_cast<void*>(v),
                      const_cast<void*>(out),
-                     const_cast<void*>(cu_seqlens_q),
-                     const_cast<void*>(cu_seqlens_k),
+                     const_cast<int32_t*>(cu_seqlens_q),
+                     const_cast<int32_t*>(cu_seqlens_k),
                      loop ? o_tmp_ptr : nullptr,
                      return_softmax ? softmax_ptr : nullptr,
                      softmax_lse_ptr,
@@ -345,21 +374,24 @@ bool flash_attn_fwd(
                      softmax_scale,
                      is_causal,
                      is_bf16,
-                     num_splits);
+                     num_splits,
+                     const_cast<void*>(attn_mask),
+                     const_cast<void*>(attn_bias),
+                     bias_mod_size,
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
+    run_fwd_with_bias_mask(launch_params, /*configure=*/ true);
 
     if( is_dropout ) {
-        launch_params.params.philox_args = PhiloxCudaState(seed, offset);
+      launch_params.params.philox_args = PhiloxCudaState(seed, offset);
     }
-
-    run_fmha_fwd(launch_params);
-
+    run_fwd_with_bias_mask(launch_params, /*configure=*/false);
     return true;
-
     FLASHATTNLIB_END_FUNC 
 }
 
 
-bool flash_attn_bwd(
+bool flash_attn_bwd_with_bias_and_mask(
         const void *q,              // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
         const void *k,              // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
         const void *v,              // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
@@ -368,8 +400,8 @@ bool flash_attn_bwd(
         void *dv,                   // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
         const void *out,            // total_q x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
         const void *dout,           // total_q x num_heads, x head_size
-        const void *cu_seqlens_q,   // int32, batch_size+1
-        const void *cu_seqlens_k,   // int32, batch_size+1
+        const int32_t *cu_seqlens_q,   // int32, batch_size+1
+        const int32_t *cu_seqlens_k,   // int32, batch_size+1
         const int total_q,
         const int total_k,
         const int batch_size,
@@ -383,31 +415,32 @@ bool flash_attn_bwd(
         const bool is_causal,
         const bool is_bf16,
         const int num_splits,
-        void *softmax_lse_ptr,
+        const void *softmax_lse_ptr,
         void *dsoftmax_ptr,
+        void *dbias_ptr,
         void *workspace_ptr,
         uint64_t *workspace_size,
         cudaStream_t stream,
         uint64_t seed,
-        uint64_t offset
-) {
+        uint64_t offset,
+        const void* attn_mask = nullptr,
+        const void* attn_bias = nullptr,
+        const int64_t* mask_dims = nullptr,
+        const int64_t* bias_dims = nullptr) {
     // printf("backward seed %jd offset %jd\b", seed, offset);
-
-    FLASHATTNLIB_BEGIN_FUNC 
-
+    FLASHATTNLIB_BEGIN_FUNC
     auto dprops = GetDeviceProperties(-1);
     bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
-    ASSERT_CHECK(is_sm8x || is_sm75);
-    auto launch = &run_fmha_bwd;
+    FLASH_ATTN_ASSERT_CHECK(is_sm8x || is_sm75);
 
     bool is_dropout = p_dropout > 0.0;
 
-    ASSERT_CHECK(batch_size > 0);
-    ASSERT_CHECK((head_size % 8 == 0) && (head_size <= 128));
+    FLASH_ATTN_ASSERT_CHECK(batch_size > 0);
+    FLASH_ATTN_ASSERT_CHECK((head_size % 8 == 0) && (head_size <= 128));
     if (head_size > 64) {  // TODO: eventually we should support SM86 and SM70 with d=128 as well
-        ASSERT_CHECK(is_sm80);
+        FLASH_ATTN_ASSERT_CHECK(is_sm80);
     }
 
     int blocksize_c = (head_size > 64 || (is_sm75 && head_size > 32)) ? 128 : 256;
@@ -427,7 +460,7 @@ bool flash_attn_bwd(
         // 1) num_splits == 1
         // 2) num_splits == 0 for auto calculation, result to num_splits == 1
         // we do allocation for case 2 for simplicity
-        if (num_splits == 1 && !loop) {
+        if (num_splits == 1) {
             *workspace_size = 0;
         } else {
             *workspace_size = uint64_t(total_q) * num_heads * head_size * sizeof(float);
@@ -435,7 +468,25 @@ bool flash_attn_bwd(
         return true;
     }
 
-    if( zero_tensors ) {
+    int bias_mod_size = 0;
+    if (attn_bias) {
+        // check attn_bias shape
+        bias_mod_size = bias_dims[0];
+        SetZero(dbias_ptr, 2, {batch_size, num_heads, max_seqlen_q_, max_seqlen_k_}, stream);
+        FLASH_ATTN_ASSERT_CHECK(bias_dims[1] == num_heads);
+    }
+
+    int mask_head_mod_size = 0;
+    int mask_seq_mod_size = 0;
+    if (attn_mask) {
+        // last two dimension
+        mask_head_mod_size = mask_dims[1];
+        mask_seq_mod_size = mask_dims[2];
+        FLASH_ATTN_ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
+        FLASH_ATTN_ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q_);
+    }
+    
+    if(zero_tensors) {
         SetZero(dq, 2, {total_q, num_heads, head_size}, stream);
         SetZero(dk, 2, {total_q, num_heads, head_size}, stream);
         SetZero(dv, 2, {total_q, num_heads, head_size}, stream);
@@ -443,8 +494,7 @@ bool flash_attn_bwd(
     }
 
     FMHA_dgrad_params params;
-
-    set_params_dgrad(params,
+    set_params_dgrad_with_bias_mask(params,
                      batch_size,
                      max_seqlen_q,
                      max_seqlen_k,
@@ -454,46 +504,32 @@ bool flash_attn_bwd(
                      const_cast<void*>(k),
                      const_cast<void*>(v),
                      const_cast<void*>(out),
-                     dq, dk, dv,
-                     const_cast<void*>(cu_seqlens_q),
-                     const_cast<void*>(cu_seqlens_k),
+                     dq,
+                     dk,
+                     dv,
+                     const_cast<int32_t*>(cu_seqlens_q),
+                     const_cast<int32_t*>(cu_seqlens_k),
                      loop ? dq_tmp_ptr : nullptr,
                      const_cast<void*>(dout),
-                     softmax_lse_ptr,
+                     const_cast<void*>(softmax_lse_ptr),
                      dsoftmax_ptr,
                      p_dropout,
                      softmax_scale,
                      is_causal,
                      is_bf16,
-                     num_splits);
+                     num_splits,
+                     attn_mask ? const_cast<void*>(attn_mask) : nullptr,
+                     attn_bias ? const_cast<void*>(attn_bias) : nullptr,
+                     attn_bias ? dbias_ptr : nullptr,
+                     bias_mod_size,
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
 
-    // calculate and set params.num_splits if num_splits == 0
-    launch(params, stream, /*configure=*/true);
-
-    if (params.num_splits > 1) {
-        SetZero(dq_tmp_ptr, 4, {total_q, num_heads, head_size}, stream);
-        if (!loop) {
-            params.o_tmp_ptr = dq_tmp_ptr; // o_tmp stores dq_tmp in the backward pass
-        }
-    }
-
-    if( is_dropout ) {
+    if(is_dropout) {
         params.philox_args = PhiloxCudaState(seed, offset);
     }
-
-    launch(params, stream, /*configure=*/false);
-
-    if (params.num_splits > 1) {
-        //dq.copy_(dq_tmp);
-        if (is_bf16) {
-            Float2BF16(dq_tmp_ptr, dq, uint64_t(total_q) * num_heads * head_size, stream);
-        } else {
-            Float2Half(dq_tmp_ptr, dq, uint64_t(total_q) * num_heads * head_size, stream);
-        }
-    }
-
+    run_bwd_with_bias_mask(params, stream);
     return true;
-
     FLASHATTNLIB_END_FUNC 
 }
 

@@ -1,6 +1,5 @@
 /* Copyright (c) 2022, Tri Dao.
  */
-
 #include "fmha.h"
 #include "fmha_block_dgrad_kernel_1xN_loop.h"
 
