@@ -87,11 +87,9 @@ bool flash_attn_fwd_with_bias_and_mask(
         const float p_dropout,
         const float softmax_scale,
         const bool zero_tensors,
-        const bool is_causal,
         const bool is_bf16,
         const int num_splits,        // SMs per attention matrix, can be 1
         void *softmax_lse_ptr,       // softmax log_sum_exp
-        void *softmax_ptr,
         void *workspace_ptr,
         uint64_t *workspace_size,
         cudaStream_t stream,
@@ -124,7 +122,6 @@ bool flash_attn_bwd_with_bias_and_mask(
         const float p_dropout,
         const float softmax_scale,
         const bool zero_tensors,
-        const bool is_causal,
         const bool is_bf16,
         const int num_splits,
         const void *softmax_lse_ptr,

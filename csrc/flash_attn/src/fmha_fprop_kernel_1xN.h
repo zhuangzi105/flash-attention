@@ -658,8 +658,17 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
     }  // Outer loop over the sequence length.
 }
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Return_softmax, bool has_attn_mask, bool has_attn_bias, bool Is_first, bool Is_last, typename Params, typename Prng>
-inline __device__ void device_1xN_with_mask_bias(const Params &params, const int bidb, const int bidh, int begin, int steps, Prng &ph0, Prng &ph1, const int loop_step_idx) {
+template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Return_softmax, bool Is_first, bool Is_last, typename Params, typename Prng>
+inline __device__ void device_1xN_with_mask_bias(const Params &params,
+                                                 const int bidb,
+                                                 const int bidh,
+                                                 int begin,
+                                                 int steps,
+                                                 Prng &ph0,
+                                                 Prng &ph1,
+                                                 const int loop_step_idx,
+                                                 const bool has_attn_mask,
+                                                 const bool has_attn_bias) {
 
 #if defined(__CUDA_ARCH__) &&  __CUDA_ARCH__ >= 800
     using elem_type = typename Kernel_traits::elem_type;
@@ -750,11 +759,11 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
     if (Return_softmax) { gmem_s.move(begin); }
     gmem_softmax_lse.move(begin);
     
-    if constexpr (has_attn_mask) {
+    if (has_attn_mask) {
         gmem_mask.move(begin);
     }
 
-    if constexpr (has_attn_bias) {
+    if (has_attn_bias) {
         gmem_bias.move(begin);
     }
     
@@ -852,11 +861,6 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
         // Do this part of P = Q * K^T.
         gemm_q_k(acc_p);
 
-        // if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-        //     printf("acc_p=%.6f, %.6f\n", acc_p[0][0].elt(0), acc_p[0][0].elt(1));
-        // }
-
-
         uint4 out[Gmem_tile_o::STGS_PER_LOOP];
         if (!Is_first) { gmem_o_tmp.load(out, 0); }
 
@@ -873,7 +877,7 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
         // Convert from the accumulator type to FP32 for Softmax.
         softmax.unpack_noscale(acc_p);
 
-        if constexpr (has_attn_mask) {
+        if (has_attn_mask) {
             using Frag_mask = fmha::Fragment_c<fmha::Row, elem_type>;
             Frag_mask frag_mask[Mma_tile_p::MMAS_M][Mma_tile_p::MMAS_N];
             fmha::clear(frag_mask);
@@ -884,14 +888,14 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
             softmax.apply_attn_mask(frag_mask, mask);
         }
 
-        if constexpr (has_attn_bias) {
+        if (has_attn_bias) {
             using Frag_Bias = fmha::Fragment_c<fmha::Row, elem_type>;
             Frag_Bias frag_bias[Mma_tile_p::MMAS_M][Mma_tile_p::MMAS_N];
             fmha::clear(frag_bias);
             gmem_bias.template load<Frag_Bias, elem_type>(frag_bias);
             gmem_bias.move();
 
-            // Apply the attn mask.
+            // Apply the attn bias.
             softmax.apply_attn_bias(frag_bias, mask);
         }
 
@@ -903,11 +907,6 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
             // if we share K and V, it could be that V was not fully read yet but we write into smem for reduction
             __syncthreads();
         }
-        // if (!Is_first) {
-        //     if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-        //         printf("p_prev_lse=%.6f, %.6f\n", p_prev_lse[0], p_prev_lse[1]);
-        //     }
-        // }
         // Compute the max.
         float p_max[Mma_tile_p::MMAS_M * 2];
         if (!Is_first) {
@@ -927,36 +926,13 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
 
         softmax.template reduce_max</*zero_init=*/Is_first>(p_max);
 
-        // if ((threadIdx.x == 0) && (l == 38)) {
-        //     printf("loop_step_idx %d, p_max = %.6f, %.6f., p_prev_lse = %.6f, %.6f\n", loop_step_idx, p_max[0], p_max[1], Is_first ? -10000.f : p_prev_lse[0], Is_first ? -10000.f : p_prev_lse[1]);
-        // }
-
-        // if (!Is_first) {
-        //     if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-        //         printf("after reduce_max=%.6f, %.6f\n", softmax.elt_[0][0], softmax.elt_[0][1]);
-        //     }
-        // }
-
         // Compute the exponential value.
         // softmax.apply_exp(p_max);
         softmax.scale_apply_exp(p_max, params.scale_bmm1f);
 
-        // if (!Is_first) {
-        //     if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-        //         printf("after apply_exp=%.6f, %.6f\n", softmax.elt_[0][0], softmax.elt_[0][1]);
-        //     }
-        // }
-
         // Compute the sum.
         float p_sum[Mma_tile_p::MMAS_M * 2];
-        // if (!Is_first) {
-        //     int warp = tidx / Cta_tile_p::THREADS_PER_WARP;
-        //     int lane = tidx % Cta_tile_p::THREADS_PER_WARP;
-        //     for (int mi = 0; mi < Mma_tile_p::MMAS_M * 2; mi++) {
-        //         p_sum[mi] = ((warp == 0) && (lane % 4 == 0)) ? expf(p_prev_lse[mi] - p_max[mi]) : 0;
-        //     }
-        // }
-        // softmax.reduce_sum(p_sum);
+
         softmax.reduce_sum_before_sync_(p_sum);
         // softmax.template reduce_sum_before_sync_</*zero_init=*/Is_first>(p_sum);
 
@@ -1017,16 +993,7 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
         #pragma unroll
         for( int ki = 0; ki < Mma_tile_o::MMAS_K; ++ki ) {
             fmha::gemm_cl<elem_type>(acc_o, frag_p[ki], frag_v[ki]);
-            // if ((threadIdx.x == 4) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-            //     float2 tmp_p = __half22float2(reinterpret_cast<__half2 &>(frag_p[ki]));
-            //     float2 tmp_v = __half22float2(reinterpret_cast<__half2 &>(frag_v[ki]));
-            //     printf("Per warp, threadIdx.x = %d, frag_p = %.6f, %.6f, frag_v = %.6f, %.6f, acc_o=%.6f\n", threadIdx.x, tmp_p.x, tmp_p.y, tmp_v.x, tmp_v.y, acc_o[0][0].elt(0));
-            // }
         }
-
-        // if ((threadIdx.x % 32 == 16) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-        //     printf("Per warp, threadIdx.x = %d, acc_o=%.6f\n", threadIdx.x, acc_o[0][2].elt(0));
-        // }
 
         // The mapping from tidx to rows changes between the softmax and the
         // O-reduction. So we recalculate the max.
@@ -1051,11 +1018,6 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
         if ((!Is_first) && o_rows_are_valid) {
             smem_softmax_lse.load(p_prev_scale_o, rows, l % 2);
         }
-        // if (!Is_first) {
-        //     if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-        //         printf("p_prev_scale_o=%.6f\n", p_prev_scale_o[0]);
-        //     }
-        // }
 
         static_assert(Gmem_tile_o::LOOPS == 1);
 
@@ -1082,14 +1044,6 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params, const int
         for (int jj = 0; jj < Gmem_tile_o::STGS_PER_LOOP; jj++) {
             float sum = p_sum_o[jj][0];
             p_sum_log[jj][0] = (sum == 0.f || sum != sum) ? -INFINITY : p_max_o[jj][0] + __logf(sum);
-            // if (sum == 0.f || sum != sum) {
-            //     printf("loop_step_idx = %d, l = %d, tidx = %d, sum = %.6f, p_max_o = %.6f\n", loop_step_idx, l, tidx, sum, p_max_o[jj][0]);
-            // }
-            // if (Is_first) {
-            //     if ((threadIdx.x == 0) && (blockIdx.x == 0) && (blockIdx.y == 0) && (l == 0))  {
-            //         printf("p_sum_log=%.6f\n", p_sum_log[jj][0]);
-            //     }
-            // }
             if ((tidx % Gmem_tile_o::THREADS_PER_ROW == 0) && o_rows_are_valid) {
                 gmem_softmax_lse.store_row(
                     reinterpret_cast<uint32_t(&)[Mma_tile_p::MMAS_M]>(p_sum_log[jj]), rows[jj]);
@@ -1185,8 +1139,10 @@ inline __device__ void device_1xN_loop(const Params &params) {
 }
 
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Return_softmax, bool Need_attn_mask, bool Need_attn_bias, typename Params>
-inline __device__ void device_1xN_loop_with_mask_bias(const Params &params) {
+template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Return_softmax, typename Params>
+inline __device__ void device_1xN_loop_with_mask_bias(const Params &params,
+                                                      const bool has_attn_mask,
+                                                      const bool has_attn_bias) {
 
     // The block index for the batch.
     const int bidb = blockIdx.x;
@@ -1207,15 +1163,19 @@ inline __device__ void device_1xN_loop_with_mask_bias(const Params &params) {
     constexpr int blocksize_c = Kernel_traits::Cta_tile_p::N;
     
     if (params.seqlen_k == blocksize_c) {
-        fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, Need_attn_mask, Need_attn_bias, true, true>(params, bidb, bidh, 0, STEPS, ph0, ph1, 0);
+        fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, true, true>(
+            params, bidb, bidh, 0, STEPS, ph0, ph1, 0, has_attn_mask, has_attn_bias);
     } else {
         const int max_loop_steps = (params.seqlen_k + blocksize_c - 1) / blocksize_c;
         // iterative with k
-        fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, Need_attn_mask, Need_attn_bias, true, false>(params, bidb, bidh, 0, STEPS, ph0, ph1, 0);
+        fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, true, false>(
+            params, bidb, bidh, 0, STEPS, ph0, ph1, 0, has_attn_mask, has_attn_bias);
         for (int loop_step_idx = 1; loop_step_idx < max_loop_steps - 1; loop_step_idx++) {
-            fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, Need_attn_mask, Need_attn_bias, false, false>(params, bidb, bidh, 0, STEPS, ph0, ph1, loop_step_idx);
+            fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, false, false>(
+                params, bidb, bidh, 0, STEPS, ph0, ph1, loop_step_idx, has_attn_mask, has_attn_bias);
         }
-        fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, Need_attn_mask, Need_attn_bias, false, true>(params, bidb, bidh, 0, STEPS, ph0, ph1, max_loop_steps - 1);
+        fmha::device_1xN_with_mask_bias<Kernel_traits, Is_dropout, Is_causal, Return_softmax, false, true>(
+            params, bidb, bidh, 0, STEPS, ph0, ph1, max_loop_steps - 1, has_attn_mask, has_attn_bias);
     }
 }
 
