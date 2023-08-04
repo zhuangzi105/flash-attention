@@ -18,7 +18,8 @@ from einops import rearrange
 
 from flash_attn.ops.activations import sqrelu_fwd
 from flash_attn.modules.mha import MHA, ParallelMHA
-from flash_attn.modules.mlp import Mlp, GatedMlp, ParallelMLP, FusedMLP, ParallelFusedMLP
+from flash_attn.modules.mlp import Mlp, ParallelMLP, FusedMLP, ParallelFusedMLP
+from flash_attn.modules.mlp import GatedMlp, ParallelGatedMlp
 from flash_attn.modules.block import Block, ParallelBlock
 from flash_attn.modules.embedding import GPT2Embeddings, ParallelGPT2Embeddings
 from flash_attn.utils.distributed import sync_shared_params, all_gather_raw
@@ -122,8 +123,13 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
             activation = (F.sigmoid if config.activation_function == 'glu'
                           else (F.silu if config.activation_function == 'swiglu'
                                 else F.gelu))
-            mlp_cls = partial(GatedMlp, hidden_features=config.n_inner, activation=activation,
-                              bias1=mlp_fc1_bias, bias2=mlp_fc2_bias, **factory_kwargs)
+            mlp_cls = GatedMlp if process_group is None else ParallelGatedMlp
+            parallel_kwargs = ({'process_group': process_group,
+                                'sequence_parallel': getattr(config, 'sequence_parallel', True)}
+                               if process_group is not None else {})
+            mlp_cls = partial(mlp_cls, hidden_features=config.n_inner, activation=activation,
+                              bias1=mlp_fc1_bias, bias2=mlp_fc2_bias,
+                              **parallel_kwargs, **factory_kwargs)
         else:
             if config.activation_function == 'relu':
                 activation = partial(F.relu, inplace=True)
@@ -160,6 +166,8 @@ def create_mlp_cls(config, layer_idx=None, process_group=None, device=None, dtyp
                               bias1=mlp_fc1_bias, bias2=mlp_fc2_bias,
                               **parallel_kwargs, **factory_kwargs)
         elif fused_dense_sqrelu_dense:
+            if process_group is not None:
+                assert fused_mlp, 'Tensor Parallel is not implemented for FusedDenseSqreluDense'
             assert FusedDenseSqreluDense is not None
             mlp_cls = partial(FusedDenseSqreluDense, hidden_features=config.n_inner,
                               checkpoint_lvl=mlp_checkpoint_lvl, **factory_kwargs)
@@ -519,6 +527,15 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
             dim = x.shape[-1] // world_size
             state_dict[key] = x[..., rank * dim:(rank + 1) * dim]
 
+    def shard_gatedmlp_fc1_dim(state_dict, key):
+        if key in state_dict:
+            x = state_dict[key]
+            dim = x.shape[0] // world_size // 2
+            state_dict[key] = rearrange(
+                rearrange(x, "(two o) ... -> two o ...", two=2)[:, rank * dim:(rank + 1) * dim],
+                "two o ... -> (two o) ..."
+            )
+
     def shard_qkv_headdim(state_dict, key):
         if key in state_dict:
             n_head = config.n_head
@@ -551,8 +568,12 @@ def shard_state_dict_tp(state_dict, config, world_size, rank):
         shard_last_dim(state_dict, f'transformer.layers.{i}.mixer.out_proj.weight')
         if rank != 0:
             state_dict.pop(f'transformer.layers.{i}.mixer.out_proj.bias', None)
-        shard_first_dim(state_dict, f'transformer.layers.{i}.mlp.fc1.weight')
-        shard_first_dim(state_dict, f'transformer.layers.{i}.mlp.fc1.bias')
+        if config.activation_function in ["glu", "swiglu", "geglu"]:
+            shard_gatedmlp_fc1_dim(state_dict, f'transformer.layers.{i}.mlp.fc1.weight')
+            shard_gatedmlp_fc1_dim(state_dict, f'transformer.layers.{i}.mlp.fc1.bias')
+        else:
+            shard_first_dim(state_dict, f'transformer.layers.{i}.mlp.fc1.weight')
+            shard_first_dim(state_dict, f'transformer.layers.{i}.mlp.fc1.bias')
         shard_last_dim(state_dict, f'transformer.layers.{i}.mlp.fc2.weight')
         if rank != 0:
             state_dict.pop(f'transformer.layers.{i}.mlp.fc2.bias', None)
