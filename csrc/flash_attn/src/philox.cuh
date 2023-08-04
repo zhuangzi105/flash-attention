@@ -50,7 +50,8 @@ inline __device__ uint4 philox(unsigned long long seed,
 
 } // namespace flash
 
-namespace {
+#if !FLASH_ATTN_WITH_TORCH
+namespace at{
 
 class Philox {
 public:
@@ -162,4 +163,5 @@ private:
   // static const unsigned long kPhiloxSB = 0xCD9E8D57;
 };
 
-} // namespace
+} // namespace at
+#endif

@@ -4,11 +4,14 @@
 
 #pragma once
 
+#if FLASH_ATTN_WITH_TORCH
 #include <ATen/cuda/CUDAContext.h>
+#endif
 
 #include "static_switch.h"
 #include "flash.h"
 #include "flash_fwd_kernel.h"
+#include "cuda_utils.h"
 
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_N, bool Is_even_K, bool Return_softmax>
 __global__ void flash_fwd_kernel(Flash_fwd_params params) {

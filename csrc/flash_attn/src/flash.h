@@ -7,6 +7,8 @@
 #include <cuda.h>
 #include <vector>
 
+#if FLASH_ATTN_WITH_TORCH
+
 #ifdef OLD_GENERATOR_PATH
 #include <ATen/CUDAGeneratorImpl.h>
 #else
@@ -15,6 +17,9 @@
 
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
 
+#endif
+
+#include "random_utils.h"
 
 constexpr int TOTAL_DIM = 0;
 constexpr int H_DIM = 1;

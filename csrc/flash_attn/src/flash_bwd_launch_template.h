@@ -2,11 +2,14 @@
 
 #pragma once
 
+#if FLASH_ATTN_WITH_TORCH
 #include <ATen/cuda/CUDAContext.h>
+#endif
 
 #include "static_switch.h"
 #include "flash.h"
 #include "flash_bwd_kernel.h"
+#include "cuda_utils.h"
 
 template<bool Clear_dQaccum=true, typename Kernel_traits>
 __global__ void flash_bwd_dot_do_o_kernel(Flash_bwd_params params) {
