@@ -87,7 +87,10 @@ void set_params_fprop(Flash_fwd_params &params,
                       float p_dropout,
                       float softmax_scale,
                       bool is_causal,
-		      bool is_bf16) {
+		      bool is_bf16,
+                      void * attn_mask = nullptr,
+                      int mask_head_mod_size = 0,
+                      int mask_seq_mod_size = 0) {
     // Reset the parameters
     memset(&params, 0, sizeof(params));
 
@@ -136,6 +139,11 @@ void set_params_fprop(Flash_fwd_params &params,
     params.seqlen_k_rounded = seqlen_k_rounded;
     params.d = d;
     params.d_rounded = d_rounded;
+
+    // attn mask
+    params.attn_mask_ptr = attn_mask;
+    params.mask_head_mod_size = mask_head_mod_size;
+    params.mask_seq_mod_size = mask_seq_mod_size;
 
     // Set the different scale values.
     params.scale_softmax = softmax_scale;
@@ -262,20 +270,31 @@ bool flash_attn_fwd(const void * const q,
                     const bool is_bf16,
                     cudaStream_t stream,
                     uint64_t seed,
-                    uint64_t offset) {
+                    uint64_t offset,
+                    const void * const attn_mask,
+                    const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
     auto dprops = at::cuda::getCurrentDeviceProperties();
 
     const bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
     const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
-    
+    const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
+    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
+
     ASSERT_CHECK(is_sm8x || is_sm90);
     ASSERT_CHECK(batch_size > 0);
     ASSERT_CHECK(head_size % 8 == 0) ;
     ASSERT_CHECK(head_size <= 256);
     ASSERT_CHECK(num_heads == num_heads_k);
 
+    if (attn_mask) {
+        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
+        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == seqlen_q);
+#if 0
+        ASSERT_CHECK(softmax_scale == 1.0f);
+#endif
+    }
     Flash_fwd_params params;
     set_params_fprop(params,
                      batch_size,
@@ -294,7 +313,10 @@ bool flash_attn_fwd(const void * const q,
 		     p_dropout,
 		     softmax_scale,
 		     is_causal,
-		     is_bf16);
+		     is_bf16,
+                     const_cast<void *>(attn_mask),
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
 
     params.rng_state = static_cast<uint64_t*>(rng_state);
 
@@ -337,19 +359,31 @@ bool flash_attn_varlen_fwd(const void * const q,
                            const bool is_bf16,
                            cudaStream_t stream,
                            uint64_t seed,
-                           uint64_t offset) {
+                           uint64_t offset,
+                           const void * const attn_mask,
+                           const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
     auto dprops = at::cuda::getCurrentDeviceProperties();
 
     const bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
     const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
+    const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
+    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
 
     ASSERT_CHECK(is_sm8x || is_sm90);
     ASSERT_CHECK(batch_size > 0);
     ASSERT_CHECK(head_size <= 256);
     ASSERT_CHECK(num_heads == num_heads_k);
     ASSERT_CHECK(head_size % 8 == 0);
+
+    if (attn_mask) {
+        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
+        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q);
+#if 0
+        ASSERT_CHECK(softmax_scale == 1.0f);
+#endif
+    }
     
     Flash_fwd_params params;
     set_params_fprop(params,
@@ -369,7 +403,10 @@ bool flash_attn_varlen_fwd(const void * const q,
 		     p_dropout,
 		     softmax_scale,
 		     is_causal,
-		     is_bf16);
+		     is_bf16,
+                     const_cast<void *>(attn_mask),
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
     
     params.rng_state = static_cast<uint64_t*>(rng_state);
 

@@ -101,6 +101,11 @@ struct Flash_fwd_params : public Qkv_params {
 
     bool is_bf16;
     bool is_causal;
+
+    // The attn mask matrix
+    void * __restrict__ attn_mask_ptr;
+    int mask_head_mod_size;
+    int mask_seq_mod_size;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -140,6 +145,9 @@ struct Flash_bwd_params : public Flash_fwd_params {
 
     // The pointer to the softmax d sum.
     void *__restrict__ dsoftmax_sum;
+
+    // The ds matrix
+    void * __restrict__ attn_ds_ptr;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

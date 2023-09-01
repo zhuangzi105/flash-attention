@@ -19,6 +19,16 @@
 #include "softmax.h"
 #include "philox.cuh"
 
+// umiswing: hack here to write masked product
+#define WRITE_MASKED_PRODUCT \
+    if (params.p_ptr) { \
+        flash::write_masked_product_to_gmem<Kernel_traits::TiledMma, Element>(scores, tPgP, gmem_thr_copy_P); \
+        tPgP.data() = tPgP.data() + (-kBlockN); \
+    }
+
+#define log(tensor) if (cute::thread0()) {printf("%s\n", #tensor);print(tensor.layout());printf("\n");}
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 namespace flash {
 
 using namespace cute;
@@ -115,7 +125,48 @@ inline __device__ void write_softmax_to_gmem(
         copy(gmem_thr_copy_P, tPrP(_, mi), tPgP(_, mi, 0));
     }
 };
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
+template<typename TiledMma, typename Engine0, typename Layout0, typename Engine1, typename Layout1>
+inline __device__ void apply_attn_mask(
+    Tensor<Engine0, Layout0> &scores, Tensor<Engine1, Layout1> const &tPgM, const float scale_softmax) {
+    // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
+    // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
+    Tensor tOrScores = make_tensor(scores.data(), flash::convert_layout_rowcol_Aregs<TiledMma>(scores.layout()));
+
+    // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
+    Layout l = tOrScores.layout();
+    Tensor tPrScores = make_tensor(tOrScores.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
+    CUTE_STATIC_ASSERT_V(size<2>(tPgM) == _1{});
+    CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgM));
+    #pragma unroll
+    for (int i = 0; i < size(tPrScores); ++i) {
+        // TODO(umiswing): support mask_seq_mod_size == 1
+        // umiswing: we must compute softmax scale here for correctness.
+        tPrScores(i) = tPrScores(i) * scale_softmax + tPgM(i);
+    }
+};
+
+template<typename TiledMma, typename Element, typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename TiledCopy>
+inline __device__ void write_masked_product_to_gmem(
+    Tensor<Engine0, Layout0> const &scores, Tensor<Engine1, Layout1> &tPgP, TiledCopy gmem_thr_copy_P
+) {
+    // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
+    // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
+    Tensor tOrScores = make_tensor(scores.data(), flash::convert_layout_rowcol_Aregs<TiledMma>(scores.layout()));
+
+    // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
+    Layout l = tOrScores.layout();
+    Tensor tPrScores_fp32 = make_tensor(tOrScores.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
+    // Convert scores from fp32 to fp16/bf16
+    Tensor tPrScores = flash::convert_type<Element>(tPrScores_fp32);
+    CUTE_STATIC_ASSERT_V(size<2>(tPgP) == _1{});
+    CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgP));
+    #pragma unroll
+    for (int mi = 0; mi < size<1>(tPrScores); ++mi) {
+        copy(gmem_thr_copy_P, tPrScores(_, mi), tPgP(_, mi, 0));
+    }
+};
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_N, bool Is_even_K, bool Return_softmax, typename Params>
@@ -164,6 +215,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
 
+    const index_t row_offset_m = ((bidb * params.mask_head_mod_size
+        + (bidh % params.mask_head_mod_size)) * params.mask_seq_mod_size
+        + (m_block * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k_rounded
+        + (n_block_max - 1) * kBlockN;
+
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
                             Shape<Int<kBlockM>, Int<kHeadDim>>{},
                             make_stride(params.q_row_stride, _1{}));
@@ -174,6 +230,16 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                             Shape<Int<kBlockN>, Int<kHeadDim>>{},
                             make_stride(params.v_row_stride, _1{}));
     Tensor gP = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.p_ptr) + row_offset_p),
+                            Shape<Int<kBlockM>, Int<kBlockN>>{},
+                            make_stride(params.seqlen_k_rounded, _1{}));
+
+    // TODO(umiswing): mask_seq_mod_size is seqlen_q_rounded or 1.
+    // When mask_seq_mod_size == 1, gM should have following layout.
+    // Tensor gM = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_m),
+    //                         Shape<Int<1>, Int<kBlockN>>{},
+    //                         make_stride(params.seqlen_k_rounded, _1{}));
+
+    Tensor gM = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_m),
                             Shape<Int<kBlockM>, Int<kBlockN>>{},
                             make_stride(params.seqlen_k_rounded, _1{}));
 
@@ -196,6 +262,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
     Tensor tPgP = gmem_thr_copy_P.partition_D(gP);
+    // TODO(umiswing): support mask_seq_mod_size == 1
+    Tensor tPgM = gmem_thr_copy_P.partition_D(gM);
 
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
@@ -377,6 +445,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                                      // m_block * kBlockM + (tidx / 32) * (kBlockM / kNWarps), 16);
         }
 
+        if (params.attn_mask_ptr) {
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgM, params.scale_softmax);
+            tPgM.data() = tPgM.data() + (-kBlockN);
+            WRITE_MASKED_PRODUCT
+        }
+
         flash::cp_async_wait<0>();
         __syncthreads();
         if (n_block > 0) {
@@ -390,8 +464,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
-            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
-            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
+            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? params.scale_softmax_log2 : M_LOG2E)
+            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? params.scale_softmax_log2 : M_LOG2E);
 
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = flash::convert_type<Element>(scores);
@@ -454,7 +528,15 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
-        softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
+
+        if (params.attn_mask_ptr) {
+            cutlass::NumericConverter<float, bfloat16_t> bf162f32;
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgM, params.scale_softmax);
+            tPgM.data() = tPgM.data() + (-kBlockN);
+            WRITE_MASKED_PRODUCT
+        }
+
+        softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? params.scale_softmax_log2 : M_LOG2E);
 
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
