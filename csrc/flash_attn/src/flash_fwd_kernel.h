@@ -464,8 +464,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
-            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? params.scale_softmax_log2 : M_LOG2E)
-            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? params.scale_softmax_log2 : M_LOG2E);
+            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2)
+            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2);
 
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = flash::convert_type<Element>(scores);
@@ -536,7 +536,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             WRITE_MASKED_PRODUCT
         }
 
-        softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? params.scale_softmax_log2 : M_LOG2E);
+        softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2);
 
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
