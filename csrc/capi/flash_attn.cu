@@ -193,7 +193,10 @@ void set_params_dgrad(Flash_bwd_params &params,
                       float p_dropout,
                       float softmax_scale,
                       bool is_causal,
-		      bool is_bf16) {
+		      bool is_bf16,
+                      void * attn_mask = nullptr,
+                      int mask_head_mod_size = 0,
+                      int mask_seq_mod_size = 0) {
 
     set_params_fprop(params,
                      b, seqlen_q, seqlen_k, seqlen_q_rounded, seqlen_k_rounded, h, h_k, d, d_rounded,
@@ -204,7 +207,10 @@ void set_params_dgrad(Flash_bwd_params &params,
                      softmax_lse_d,
                      p_dropout,
                      softmax_scale,
-                     is_causal, is_bf16);
+                     is_causal, is_bf16,
+                     attn_mask,
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
 
     // Set the pointers and strides.
     params.do_ptr = dout;
@@ -284,7 +290,7 @@ bool flash_attn_fwd(const void * const q,
 
     ASSERT_CHECK(is_sm8x || is_sm90);
     ASSERT_CHECK(batch_size > 0);
-    ASSERT_CHECK(head_size % 8 == 0) ;
+    ASSERT_CHECK(head_size % 8 == 0);
     ASSERT_CHECK(head_size <= 256);
     ASSERT_CHECK(num_heads == num_heads_k);
 
@@ -470,7 +476,9 @@ bool flash_attn_bwd(const void * const dout,
                     const bool is_bf16,
                     cudaStream_t stream,
                     uint64_t seed,
-                    uint64_t offset) {
+                    uint64_t offset,
+                    const void * const attn_mask,
+                    const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
     auto dprops = at::cuda::getCurrentDeviceProperties();
 
@@ -478,6 +486,8 @@ bool flash_attn_bwd(const void * const dout,
     const bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
     const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
+    const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
+    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
 
     ASSERT_CHECK(is_sm8x || is_sm90);
     ASSERT_CHECK(batch_size > 0);
@@ -488,6 +498,14 @@ bool flash_attn_bwd(const void * const dout,
     ASSERT_CHECK(num_heads == num_heads_k);
     ASSERT_CHECK(head_size % 8 == 0);
     ASSERT_CHECK(head_size <= 256);
+
+    if (attn_mask) {
+        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
+        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == seqlen_q);
+#if 0
+        ASSERT_CHECK(softmax_scale == 1.0f);
+#endif
+    }
 
     // bool loop = seqlen_k > blocksize_c;
     // TODO: change later, for now set to true for simplicity
@@ -517,7 +535,10 @@ bool flash_attn_bwd(const void * const dout,
                      p_dropout,
                      softmax_scale,
                      is_causal,
-		     is_bf16);
+		     is_bf16,
+                     const_cast<void *>(attn_mask),
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
 
     auto launch = &run_mha_bwd;
     

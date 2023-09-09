@@ -145,9 +145,6 @@ struct Flash_bwd_params : public Flash_fwd_params {
 
     // The pointer to the softmax d sum.
     void *__restrict__ dsoftmax_sum;
-
-    // The ds matrix
-    void * __restrict__ attn_ds_ptr;
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

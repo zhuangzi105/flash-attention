@@ -127,26 +127,6 @@ inline __device__ void write_softmax_to_gmem(
 };
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename TiledMma, typename Engine0, typename Layout0, typename Engine1, typename Layout1>
-inline __device__ void apply_attn_mask(
-    Tensor<Engine0, Layout0> &scores, Tensor<Engine1, Layout1> const &tPgM, const float scale_softmax) {
-    // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
-    // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
-    Tensor tOrScores = make_tensor(scores.data(), flash::convert_layout_rowcol_Aregs<TiledMma>(scores.layout()));
-
-    // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
-    Layout l = tOrScores.layout();
-    Tensor tPrScores = make_tensor(tOrScores.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
-    CUTE_STATIC_ASSERT_V(size<2>(tPgM) == _1{});
-    CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgM));
-    #pragma unroll
-    for (int i = 0; i < size(tPrScores); ++i) {
-        // TODO(umiswing): support mask_seq_mod_size == 1
-        // umiswing: we must compute softmax scale here for correctness.
-        tPrScores(i) = tPrScores(i) * scale_softmax + tPgM(i);
-    }
-};
-
 template<typename TiledMma, typename Element, typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename TiledCopy>
 inline __device__ void write_masked_product_to_gmem(
     Tensor<Engine0, Layout0> const &scores, Tensor<Engine1, Layout1> &tPgP, TiledCopy gmem_thr_copy_P
@@ -189,6 +169,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
     constexpr int kNWarps = Kernel_traits::kNWarps;
     constexpr int MMA_M = kBlockM / decltype(size<0>(typename Kernel_traits::TiledMma::TiledShape_MNK{}))::value;
+#if 0
+    if (cute::thread0()) printf("\nfwd kBlockM, kBlockN: %d, %d\n", kBlockM, kBlockN);
+    if (cute::thread0()) printf("\nfwd warps:%d\n", Kernel_traits::kNWarps);
+#endif
 
     const BlockInfo</*Varlen=*/!Is_even_N> binfo(params, bidb);
     if (m_block * kBlockM >= binfo.actual_seqlen_q || binfo.actual_seqlen_k == 0) return;
@@ -215,7 +199,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
 
-    const index_t row_offset_m = ((bidb * params.mask_head_mod_size
+    const index_t row_offset_mask = ((bidb * params.mask_head_mod_size
         + (bidh % params.mask_head_mod_size)) * params.mask_seq_mod_size
         + (m_block * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k_rounded
         + (n_block_max - 1) * kBlockN;
@@ -239,9 +223,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     //                         Shape<Int<1>, Int<kBlockN>>{},
     //                         make_stride(params.seqlen_k_rounded, _1{}));
 
-    Tensor gM = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_m),
-                            Shape<Int<kBlockM>, Int<kBlockN>>{},
-                            make_stride(params.seqlen_k_rounded, _1{}));
+    // umiswing: should this be Element or ElementAccum?
+    Tensor gMask = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_mask),
+                               Shape<Int<kBlockM>, Int<kBlockN>>{},
+                               make_stride(params.seqlen_k_rounded, _1{}));
 
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
@@ -263,7 +248,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
     Tensor tPgP = gmem_thr_copy_P.partition_D(gP);
     // TODO(umiswing): support mask_seq_mod_size == 1
-    Tensor tPgM = gmem_thr_copy_P.partition_D(gM);
+    Tensor tPgMask = gmem_thr_copy_P.partition_D(gMask);
 
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
@@ -419,6 +404,21 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
+#if 0
+log(gQ)
+log(gK)
+log(gMask)
+log(acc_s)
+log(sQ)
+log(tSsQ)
+log(tSrQ)
+log(sK)
+log(tSsK)
+log(tSrK)
+log(tPgMask)
+log(scores)
+#endif
+
         // if (cute::thread0()) { print(scores); }
         // We don't put the masking before the matmul S = Q K^T because we don't clear sK
         // for rows outside actual_seqlen_k. So those rows could have Inf / NaN, and the matmul
@@ -446,8 +446,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         if (params.attn_mask_ptr) {
-            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgM, params.scale_softmax);
-            tPgM.data() = tPgM.data() + (-kBlockN);
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.scale_softmax);
+            tPgMask.data() = tPgMask.data() + (-kBlockN);
             WRITE_MASKED_PRODUCT
         }
 
@@ -529,10 +529,11 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
 
+
         if (params.attn_mask_ptr) {
             cutlass::NumericConverter<float, bfloat16_t> bf162f32;
-            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgM, params.scale_softmax);
-            tPgM.data() = tPgM.data() + (-kBlockN);
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.scale_softmax);
+            tPgMask.data() = tPgMask.data() + (-kBlockN);
             WRITE_MASKED_PRODUCT
         }
 

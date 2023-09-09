@@ -21,6 +21,29 @@
 namespace flash {
 
 using namespace cute;
+#if 0
+template<typename TiledMma, typename Element, typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename TiledCopy>
+inline __device__ void write_masked_product_to_gmem(
+    Tensor<Engine0, Layout0> const &scores, Tensor<Engine1, Layout1> &tPgP, TiledCopy gmem_thr_copy_P
+) {
+    if (cute::thread0()) {printf("\nwirete_masked_product_to_gmem\n");}
+    // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
+    // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
+    Tensor tOrScores = make_tensor(scores.data(), flash::convert_layout_rowcol_Aregs<TiledMma>(scores.layout()));
+
+    // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
+    Layout l = tOrScores.layout();
+    Tensor tPrScores_fp32 = make_tensor(tOrScores.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
+    // Convert scores from fp32 to fp16/bf16
+    Tensor tPrScores = flash::convert_type<Element>(tPrScores_fp32);
+    CUTE_STATIC_ASSERT_V(size<2>(tPgP) == _1{});
+    CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgP));
+    #pragma unroll
+    for (int mi = 0; mi < size<1>(tPrScores); ++mi) {
+        copy(gmem_thr_copy_P, tPrScores(_, mi), tPgP(_, mi, 0));
+    }
+};
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -67,7 +90,9 @@ make_tiled_copy_C_warpcontiguousN(Copy_Atom<Args...> const& copy_atom,
     auto t = make_tile(make_layout(size<0>(TileShape_MNK{})),
                        Layout<Shape<Int<AtomShape_N>, Int<kNWarpsN>, _2>,   // (8, 2, 2) or (8, 4, 2)
                               Stride<_1, Int<MMAStride_N>, _8> >{});       // (1, 64, 8) or (1, 32, 8)
-    // if (cute::thread0()) {printf("make_tiled_copy_C_warpcontiguousN "); print(t); printf("\n");  }
+#if 0
+    if (cute::thread0()) {printf("make_tiled_copy_C_warpcontiguousN "); print(t); printf("\n");  }
+#endif
     return make_tiled_copy_impl(copy_atom, tiled_mma.get_layoutC_TV(), t);
 }
 
@@ -431,6 +456,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     constexpr int kBlockM = Kernel_traits::kBlockM;
     constexpr int kBlockN = Kernel_traits::kBlockN;
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
+#if 0
+    if (cute::thread0()) printf("\nbwd kBlockM, kBlockN: %d, %d\n", kBlockM, kBlockN);
+    if (cute::thread0()) printf("\nbwd warps:%d\n", Kernel_traits::kNWarps);
+#endif
     // constexpr int kNWarps = Kernel_traits::kNWarps;
     constexpr int MMA_N_SdP = kBlockN / decltype(size<1>(typename Kernel_traits::TiledMmaSdP::TiledShape_MNK{}))::value;
     constexpr int AtomLayoutMS = Kernel_traits::AtomLayoutMSdP;
@@ -460,6 +489,11 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     const index_t row_offset_dpsum = (bidb * params.h + bidh) * params.seqlen_q_rounded
         + (m_block_max - 1) * kBlockM;
 
+    const index_t row_offset_mask = ((bidb * params.mask_head_mod_size
+        + (bidh % params.mask_head_mod_size)) * params.mask_seq_mod_size
+        + ((m_block_max - 1) * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k_rounded
+        + n_block * kBlockN;
+
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
                             Shape<Int<kBlockM>, Int<kHeadDim>>{},
                             make_stride(params.q_row_stride, _1{}));
@@ -485,6 +519,14 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                               Shape<Int<kBlockM>>{}, Stride<_1>{});
     Tensor gdPsum = make_tensor(make_gmem_ptr(reinterpret_cast<ElementAccum *>(params.dsoftmax_sum) + row_offset_dpsum),
                                 Shape<Int<kBlockM>>{}, Stride<_1>{});
+    Tensor gMask = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_mask),
+                               Shape<Int<kBlockM>, Int<kBlockN>>{},
+                               make_stride(params.seqlen_k_rounded, _1{}));
+#if 0
+    Tensor gMask = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_mask),
+                               Shape<_2, _2, _2, _8, _8>{},
+                               Stride<_1, _8, _1024, _2048, _16>{});
+#endif
 
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQdO{});
@@ -538,6 +580,12 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     Tensor tdQsdQ = gmem_thr_copy_dQ.partition_S(sdQ);    // ((Atom,AtomNum),ATOM_M,ATOM_N)
     Tensor tdQgdQ = gmem_thr_copy_dQ.partition_D(gdQ);
     Tensor tdQgdQaccum = gmem_thr_copy_dQ_accum.partition_D(gdQaccum);
+
+#if 0
+    const index_t row_offset_p = ((bidb * params.h + bidh) * params.seqlen_q_rounded
+        + (m_block_max - 1) * kBlockM) * params.seqlen_k_rounded + n_block * kBlockN;
+#endif
+
     // if (cute::thread0()) { print(tdQgdQaccum.layout()); printf("\n"); }
     // __syncthreads();
     // if (blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0 && tidx < 64) {
@@ -545,6 +593,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     // }
 
     typename Kernel_traits::TiledMmaSdP tiled_mma_sdp;
+    auto gmem_thr_copy_P = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp).get_thread_slice(tidx);
+    Tensor tPgMask = gmem_thr_copy_P.partition_D(gMask);
     auto thr_mma_sdp = tiled_mma_sdp.get_thread_slice(tidx);
     Tensor tSrQ = thr_mma_sdp.partition_fragment_A(sQ);         // (MMA,MMA_N,MMA_K)
     Tensor tSrK = thr_mma_sdp.partition_fragment_B(sK);         // (MMA,MMA_N,MMA_K)
@@ -790,6 +840,13 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // However, it's possible that the values in acc_s are so large that they overflow
         // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
         // So we need to mask out the elements beyond actual_seqlen_k.
+        if (params.attn_mask_ptr) {
+            flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, params.scale_softmax);
+#if 0
+            // flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, gMask, params.scale_softmax);
+#endif
+            tPgMask.data() = tPgMask.data() + (-kBlockM * params.seqlen_k_rounded);
+        }
         if (!Is_causal) {
             if (!Is_even_MN && (n_block + 1) * kBlockN >= binfo.actual_seqlen_k) {
                 flash::apply_mask(scores, binfo.actual_seqlen_k,
@@ -806,7 +863,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         }
         // if (cute::thread(32, 0)) { print(scores); }
         // Compute the exponential value.
-        flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
+#if 0
+        flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2);
+#endif
         if (Is_dropout) {
             uint32_t warp_id = tidx / 32;
             uint32_t block_row_idx = m_block * (kBlockM / 16) + warp_id % AtomLayoutMS;
