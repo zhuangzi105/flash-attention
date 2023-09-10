@@ -203,9 +203,7 @@ inline __device__ void apply_mask_causal_w_idx(
         // }
     }
 }
-#if 0
-#define log(tensor) if (cute::thread0()) {printf("%s\n", #tensor);print(tensor.layout());printf("\n");}
-#endif
+
 template<typename TiledMma, typename Engine0, typename Layout0, typename Engine1, typename Layout1>
 inline __device__ void apply_attn_mask(
     Tensor<Engine0, Layout0> &scores, Tensor<Engine1, Layout1> const &tPgMask, const float scale_softmax) {
@@ -216,12 +214,10 @@ inline __device__ void apply_attn_mask(
     // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
     Layout l = tOrScores.layout();
     Tensor tPrScores = make_tensor(tOrScores.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
-#if 0
-log(tPrScores)
-log(tPgMask)
+
+    // TODO(umiswing): add assert here
     // CUTE_STATIC_ASSERT_V(size<2>(tPgMask) == _1{});
     // CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgMask));
-#endif
     #pragma unroll
     for (int i = 0; i < size(tPrScores); ++i) {
         // TODO(umiswing): support mask_seq_mod_size == 1

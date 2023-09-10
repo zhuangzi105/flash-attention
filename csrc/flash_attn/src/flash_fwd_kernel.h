@@ -169,10 +169,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     constexpr int kHeadDim = Kernel_traits::kHeadDim;
     constexpr int kNWarps = Kernel_traits::kNWarps;
     constexpr int MMA_M = kBlockM / decltype(size<0>(typename Kernel_traits::TiledMma::TiledShape_MNK{}))::value;
-#if 0
-    if (cute::thread0()) printf("\nfwd kBlockM, kBlockN: %d, %d\n", kBlockM, kBlockN);
-    if (cute::thread0()) printf("\nfwd warps:%d\n", Kernel_traits::kNWarps);
-#endif
 
     const BlockInfo</*Varlen=*/!Is_even_N> binfo(params, bidb);
     if (m_block * kBlockM >= binfo.actual_seqlen_q || binfo.actual_seqlen_k == 0) return;
@@ -404,20 +400,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
-#if 0
-log(gQ)
-log(gK)
-log(gMask)
-log(acc_s)
-log(sQ)
-log(tSsQ)
-log(tSrQ)
-log(sK)
-log(tSsK)
-log(tSrK)
-log(tPgMask)
-log(scores)
-#endif
 
         // if (cute::thread0()) { print(scores); }
         // We don't put the masking before the matmul S = Q K^T because we don't clear sK
