@@ -115,6 +115,7 @@ template<typename Engine0, typename Layout0, typename Engine1, typename Layout1,
 inline __device__ void write_softmax_to_gmem(
     Tensor<Engine0, Layout0> const &tOrP, Tensor<Engine1, Layout1> &tPgP, TiledCopy gmem_thr_copy_P
 ) {
+#if 0
     // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
     Layout l = tOrP.layout();
     Tensor tPrP = make_tensor(tOrP.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
@@ -124,6 +125,7 @@ inline __device__ void write_softmax_to_gmem(
     for (int mi = 0; mi < size<1>(tPrP); ++mi) {
         copy(gmem_thr_copy_P, tPrP(_, mi), tPgP(_, mi, 0));
     }
+#endif
 };
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -244,7 +246,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
     Tensor tPgP = gmem_thr_copy_P.partition_D(gP);
     // TODO(umiswing): support mask_seq_mod_size == 1
+#if 0
     Tensor tPgMask = gmem_thr_copy_P.partition_D(gMask);
+#endif
 
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
@@ -253,6 +257,9 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tOrVt  = thr_mma.partition_fragment_B(sVtNoSwizzle);                // (MMA, MMA_K,MMA_N)
 
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});  // MMA, MMA_M, MMA_K
+
+    auto gmem_thr_copy_Mask = make_tiled_copy_C(typename Kernel_traits::GmemCopyAtomMask{}, tiled_mma).get_thread_slice(tidx);
+    Tensor tPgMask = gmem_thr_copy_Mask.partition_D(gMask);
 
     //
     // Copy Atom retiling

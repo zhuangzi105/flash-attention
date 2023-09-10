@@ -150,6 +150,7 @@ struct Flash_fwd_kernel_traits : public Base {
     using GmemLayoutAtomP = Layout<Shape <Int<kNThreads / kGmemThreadsPerRowP>, Int<kGmemThreadsPerRowP>>,
                                    Stride<Int<kGmemThreadsPerRowP>, _1>>;
 
+    using GmemCopyAtomMask = Copy_Atom<DefaultCopy, elem_type>;
     using GmemTiledCopyP = decltype(
         make_tiled_copy(Copy_Atom<DefaultCopy, elem_type>{},
                         GmemLayoutAtomP{},
