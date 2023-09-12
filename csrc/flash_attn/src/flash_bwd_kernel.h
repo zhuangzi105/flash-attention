@@ -799,21 +799,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
         // So we need to mask out the elements beyond actual_seqlen_k.
         if (params.attn_mask_ptr) {
-            cutlass::NumericConverter<float, bfloat16_t> bf162f32;
-            if(cute::thread0()) {printf("\nbwd scale_softmax: %f\n", params.scale_softmax);}
-            if(cute::thread0()) {
-                printf("\nbwd before attn mask:\n");
-                for(int i=0;i<size(scores);i++) {
-                    printf("scores[%d]: %f\n", i, scores(i));
-                }
-            }
             flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, params.scale_softmax);
-            if(cute::thread0()) {
-                printf("\nbwd after attn mask:\n");
-                for(int i=0;i<size(scores);i++) {
-                    printf("scores[%d]: %f\n", i, scores(i));
-                }
-            }
             tPgMask.data() = tPgMask.data() + (-kBlockM * params.seqlen_k_rounded);
         }
         if (!Is_causal) {
