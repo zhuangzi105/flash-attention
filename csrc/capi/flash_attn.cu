@@ -87,7 +87,7 @@ void set_params_fprop(Flash_fwd_params &params,
                       float p_dropout,
                       float softmax_scale,
                       bool is_causal,
-		      bool is_bf16,
+                      bool is_bf16,
                       void * attn_mask = nullptr,
                       int mask_head_mod_size = 0,
                       int mask_seq_mod_size = 0) {
@@ -95,7 +95,6 @@ void set_params_fprop(Flash_fwd_params &params,
     memset(&params, 0, sizeof(params));
 
     params.is_bf16 = is_bf16;
-
     // Set the pointers and strides.
     params.q_ptr = q;
     params.k_ptr = k;
@@ -193,7 +192,8 @@ void set_params_dgrad(Flash_bwd_params &params,
                       float p_dropout,
                       float softmax_scale,
                       bool is_causal,
-		      bool is_bf16,
+                      bool is_bf16,
+                      const int num_splits = 0,
                       void * attn_mask = nullptr,
                       int mask_head_mod_size = 0,
                       int mask_seq_mod_size = 0) {
@@ -207,7 +207,8 @@ void set_params_dgrad(Flash_bwd_params &params,
                      softmax_lse_d,
                      p_dropout,
                      softmax_scale,
-                     is_causal, is_bf16,
+                     is_causal,
+                     is_bf16,
                      attn_mask,
                      mask_head_mod_size,
                      mask_seq_mod_size);
@@ -239,6 +240,7 @@ void set_params_dgrad(Flash_bwd_params &params,
 
     // Softmax sum
     params.dsoftmax_sum = dsoftmax_sum_d;
+    params.num_splits = num_splits;
 }
 
 void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream) {
@@ -474,6 +476,7 @@ bool flash_attn_bwd(const void * const dout,
                     const float softmax_scale,
                     const bool is_causal,
                     const bool is_bf16,
+                    const int num_splits,
                     cudaStream_t stream,
                     uint64_t seed,
                     uint64_t offset,
@@ -520,11 +523,13 @@ bool flash_attn_bwd(const void * const dout,
                      num_heads, num_heads_k,
                      head_size, head_size_rounded,
                      const_cast<void *>(q),
-		     const_cast<void *>(k),
-		     const_cast<void *>(v),
-		     const_cast<void *>(out),
+                     const_cast<void *>(k),
+                     const_cast<void *>(v),
+                     const_cast<void *>(out),
                      const_cast<void *>(dout),
-		     dq, dk, dv,
+                     dq,
+                     dk,
+                     dv,
                      nullptr,
                      nullptr,
                      loop ? dq_accum : nullptr,
@@ -535,7 +540,8 @@ bool flash_attn_bwd(const void * const dout,
                      p_dropout,
                      softmax_scale,
                      is_causal,
-		     is_bf16,
+                     is_bf16,
+                     num_splits,
                      const_cast<void *>(attn_mask),
                      mask_head_mod_size,
                      mask_seq_mod_size);
@@ -585,6 +591,7 @@ bool flash_attn_varlen_bwd(const void * const dout,
                            const float softmax_scale,
                            const bool is_causal,
                            const bool is_bf16,
+                           const int num_splits,
                            cudaStream_t stream,
                            uint64_t seed,
                            uint64_t offset) {
@@ -620,7 +627,9 @@ bool flash_attn_varlen_bwd(const void * const dout,
 		     const_cast<void*>(v),
 		     const_cast<void*>(out),
                      const_cast<void*>(dout),
-		     dq, dk, dv,
+                     dq,
+                     dk,
+                     dv,
                      const_cast<int32_t*>(cu_seqlens_q),
                      const_cast<int32_t*>(cu_seqlens_k),
                      loop ? dq_accum : nullptr,
@@ -631,7 +640,8 @@ bool flash_attn_varlen_bwd(const void * const dout,
                      p_dropout,
                      softmax_scale,
                      is_causal,
-		     is_bf16);
+                     is_bf16,
+                     num_splits);
 
     auto launch = &run_mha_bwd;
 
