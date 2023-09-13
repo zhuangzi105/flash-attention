@@ -133,6 +133,7 @@ template<typename TiledMma, typename Element, typename Engine0, typename Layout0
 inline __device__ void write_masked_product_to_gmem(
     Tensor<Engine0, Layout0> const &scores, Tensor<Engine1, Layout1> &tPgP, TiledCopy gmem_thr_copy_P
 ) {
+#if 0
     // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
     // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
     Tensor tOrScores = make_tensor(scores.data(), flash::convert_layout_rowcol_Aregs<TiledMma>(scores.layout()));
@@ -146,8 +147,9 @@ inline __device__ void write_masked_product_to_gmem(
     CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgP));
     #pragma unroll
     for (int mi = 0; mi < size<1>(tPrScores); ++mi) {
-        copy(gmem_thr_copy_P, tPrScores(_, mi), tPgP(_, mi, 0));
+        cute::copy(gmem_thr_copy_P, tPrScores(_, mi), tPgP(_, mi, 0));
     }
+#endif
 };
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
