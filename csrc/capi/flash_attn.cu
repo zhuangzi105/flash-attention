@@ -304,10 +304,8 @@ bool flash_attn_fwd(const void * const q,
     if (attn_mask) {
         ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
         ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == seqlen_q);
-#if 0
-        ASSERT_CHECK(softmax_scale == 1.0f);
-#endif
     }
+
     Flash_fwd_params params;
     set_params_fprop(params,
                      batch_size,
@@ -368,6 +366,7 @@ bool flash_attn_varlen_fwd(const void * const q,
                            const int head_size_rounded,
                            const float p_dropout,
                            const float softmax_scale,
+                           const float softmax_unscale,
                            const bool is_causal,
                            const bool return_softmax,
                            const bool is_bf16,
@@ -394,9 +393,6 @@ bool flash_attn_varlen_fwd(const void * const q,
     if (attn_mask) {
         ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
         ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q);
-#if 0
-        ASSERT_CHECK(softmax_scale == 1.0f);
-#endif
     }
     
     Flash_fwd_params params;
@@ -416,7 +412,7 @@ bool flash_attn_varlen_fwd(const void * const q,
 		     softmax_lse_ptr,
 		     p_dropout,
 		     softmax_scale,
-                     1, // just hack
+                     softmax_unscale,
 		     is_causal,
 		     is_bf16,
                      const_cast<void *>(attn_mask),
@@ -513,9 +509,6 @@ bool flash_attn_bwd(const void * const dout,
     if (attn_mask) {
         ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
         ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == seqlen_q);
-#if 0
-        ASSERT_CHECK(softmax_scale == 1.0f);
-#endif
     }
 
     // bool loop = seqlen_k > blocksize_c;
@@ -598,12 +591,15 @@ bool flash_attn_varlen_bwd(const void * const dout,
                            const int head_size_rounded,
                            const float p_dropout,
                            const float softmax_scale,
+                           const float softmax_unscale,
                            const bool is_causal,
                            const bool is_bf16,
                            const int num_splits,
                            cudaStream_t stream,
                            uint64_t seed,
-                           uint64_t offset) {
+                           uint64_t offset,
+                           const void * const attn_mask,
+                           const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
     auto dprops = at::cuda::getCurrentDeviceProperties();
 
@@ -611,6 +607,9 @@ bool flash_attn_varlen_bwd(const void * const dout,
     const bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
     const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
+    const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
+    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
+
     const bool loop = true;
 
     ASSERT_CHECK(is_sm8x || is_sm90);
@@ -622,6 +621,11 @@ bool flash_attn_varlen_bwd(const void * const dout,
     }
     ASSERT_CHECK(num_heads == num_heads_k);
     ASSERT_CHECK(head_size % 8 == 0);
+
+    if (attn_mask) {
+        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
+        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q);
+    }
 
     Flash_bwd_params params;
 
@@ -648,10 +652,13 @@ bool flash_attn_varlen_bwd(const void * const dout,
                      const_cast<void*>(softmax_d),
                      p_dropout,
                      softmax_scale,
-                     1, // just hack
+                     softmax_unscale,
                      is_causal,
                      is_bf16,
-                     num_splits);
+                     num_splits,
+                     const_cast<void *>(attn_mask),
+                     mask_head_mod_size,
+                     mask_seq_mod_size);
 
     auto launch = &run_mha_bwd;
 

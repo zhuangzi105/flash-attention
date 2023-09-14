@@ -56,6 +56,7 @@ bool flash_attn_varlen_fwd(const void * const q,  // total_q x num_heads x head_
                            const int head_size_rounded,
                            const float p_dropout,
                            const float softmax_scale,
+                           const float softmax_unscale,
                            const bool is_causal,
                            const bool return_softmax,
                            const bool is_bf16,
@@ -123,12 +124,15 @@ bool flash_attn_varlen_bwd(const void * const dout,  // total_q x num_heads, x h
                            const int head_size_rounded,
                            const float p_dropout,         // probability to drop
                            const float softmax_scale,
+                           const float softmax_unscale,
                            const bool is_causal,
                            const bool is_bf16,
                            const int num_splits,
                            cudaStream_t stream,
                            uint64_t seed,
-                           uint64_t offset);
+                           uint64_t offset,
+                           const void * attn_mask,
+                           const int64_t * const mask_dims);
 
 bool flash_attn_fwd_with_bias_and_mask(const void *q,              // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
                                        const void *k,              // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
