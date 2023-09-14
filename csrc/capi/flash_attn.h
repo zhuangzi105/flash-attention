@@ -26,6 +26,7 @@ bool flash_attn_fwd(const void * const q,         // batch_size x seqlen_q x num
                     const int head_size_rounded,
                     const float p_dropout,
                     const float softmax_scale,
+                    const float softmax_unscale,
                     const bool is_causal,
                     const bool return_softmax,
                     const bool is_bf16,
@@ -87,6 +88,7 @@ bool flash_attn_bwd(const void * const dout,  // batch_size x seqlen_q x num_hea
                     const int head_size_rounded,
                     const float p_dropout,         // probability to drop
                     const float softmax_scale,
+                    const float softmax_unscale,
                     const bool is_causal,
                     const bool is_bf16,
                     const int num_splits,

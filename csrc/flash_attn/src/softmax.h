@@ -206,7 +206,7 @@ inline __device__ void apply_mask_causal_w_idx(
 
 template<typename TiledMma, typename Engine0, typename Layout0, typename Engine1, typename Layout1>
 inline __device__ void apply_attn_mask(
-    Tensor<Engine0, Layout0> &scores, Tensor<Engine1, Layout1> const &tPgMask, const float scale_softmax) {
+    Tensor<Engine0, Layout0> &scores, Tensor<Engine1, Layout1> const &tPgMask, const float unscale_softmax) {
     // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
     // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
     Tensor tOrScores = make_tensor(scores.data(), flash::convert_layout_rowcol_Aregs<TiledMma>(scores.layout()));
@@ -222,7 +222,7 @@ inline __device__ void apply_attn_mask(
     for (int i = 0; i < size(tPrScores); ++i) {
         // TODO(umiswing): support mask_seq_mod_size == 1
         // umiswing: we must compute softmax scale here for correctness.
-        tPrScores(i) = tPrScores(i) * scale_softmax + tPgMask(i);
+        tPrScores(i) = tPrScores(i) + tPgMask(i) * unscale_softmax;
     }
 }
 

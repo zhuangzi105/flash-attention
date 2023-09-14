@@ -76,6 +76,7 @@ struct Flash_fwd_params : public Qkv_params {
     // The scaling factors for the kernel.
     float scale_softmax;
     float scale_softmax_log2;
+    float unscale_softmax;
 
     // array of length b+1 holding starting offset of each sequence.
     int * __restrict__ cu_seqlens_q;

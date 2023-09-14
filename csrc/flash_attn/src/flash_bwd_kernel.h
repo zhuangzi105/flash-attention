@@ -821,7 +821,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
         // So we need to mask out the elements beyond actual_seqlen_k.
         if (params.attn_mask_ptr) {
-            flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, params.scale_softmax);
+            flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockM * params.seqlen_k_rounded);
         }
         if (!Is_causal) {
@@ -844,7 +844,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         }
         // if (cute::thread(32, 0)) { print(scores); }
         // Compute the exponential value.
-        flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2);
+        flash::scale_apply_exp2</*scale_max=*/false>(scores, lse, params.scale_softmax_log2);
         if (Is_dropout) {
             uint32_t warp_id = tidx / 32;
             uint32_t block_row_idx = m_block * (kBlockM / 16) + warp_id % AtomLayoutMS;

@@ -443,7 +443,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         }
 
         if (params.attn_mask_ptr) {
-            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.scale_softmax);
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockN);
             WRITE_MASKED_PRODUCT
         }
@@ -461,8 +461,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
-            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2)
-            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2);
+            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/true>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
+            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
 
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = flash::convert_type<Element>(scores);
@@ -530,12 +530,12 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         if (params.attn_mask_ptr) {
             cutlass::NumericConverter<float, bfloat16_t> bf162f32;
-            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.scale_softmax);
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockN);
             WRITE_MASKED_PRODUCT
         }
 
-        softmax_rescale_o</*Is_first=*/false>(scores, scores_max, scores_sum, acc_o, params.attn_mask_ptr ? M_LOG2E : params.scale_softmax_log2);
+        softmax_rescale_o</*Is_first=*/false, true>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
 
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
