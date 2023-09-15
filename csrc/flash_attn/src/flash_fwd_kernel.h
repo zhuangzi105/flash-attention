@@ -26,7 +26,8 @@
         tPgP.data() = tPgP.data() + (-kBlockN); \
     }
 
-#define log(tensor) if (cute::thread0()) {printf("%s\n", #tensor);print(tensor.layout());printf("\n");}
+#define log_tensor(tensor) if (cute::thread0()) {printf("%s\n", #tensor);print(tensor.layout());printf("\n");}
+#define log_layout(layout) if (cute::thread0()) {printf("%s\n", #layout);print(layout);printf("\n");}
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 namespace flash {
@@ -201,7 +202,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
     const index_t row_offset_mask = ((bidb * params.mask_head_mod_size
         + (bidh % params.mask_head_mod_size)) * params.mask_seq_mod_size
-        + (m_block * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k_rounded
+        + (m_block * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k
         + (n_block_max - 1) * kBlockN;
 
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
@@ -226,7 +227,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     // umiswing: should this be Element or ElementAccum?
     Tensor gMask = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_mask),
                                Shape<Int<kBlockM>, Int<kBlockN>>{},
-                               make_stride(params.seqlen_k_rounded, _1{}));
+                               make_stride(params.seqlen_k, _1{}));
 
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQ{});
@@ -263,7 +264,33 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor acc_o = partition_fragment_C(tiled_mma, Shape<Int<kBlockM>, Int<kHeadDim>>{});  // MMA, MMA_M, MMA_K
 
     auto gmem_thr_copy_Mask = make_tiled_copy_C(typename Kernel_traits::GmemCopyAtomMask{}, tiled_mma).get_thread_slice(tidx);
+
+log_tensor(gMask)
     Tensor tPgMask = gmem_thr_copy_Mask.partition_D(gMask);
+log_tensor(tPgMask)
+    Tensor cMask = make_identity_tensor(shape(gMask));
+log_tensor(cMask)
+    Tensor tPcMask = gmem_thr_copy_Mask.partition_D(cMask);
+log_tensor(tPcMask)
+log_layout(tPcMask(0))
+log_layout(make_coord(params.seqlen_q, params.seqlen_k))
+#if 0
+    Tensor tPpMask = make_tensor<bool>(make_shape(size<0>(gMask), size<1>(gMask)));
+log(tPpMask)
+
+    // TODO(umiswing): support seqlen_q != seqlen_k
+    // it seems that we don't need to create a predicate tensor
+    if (!Is_even_N) {
+        #pragma unroll
+        for (int m=0; m < size<0>(tPpMask); ++m) {
+          #pragma unroll
+          for (int n=0; n < size<1>(tPpMask); ++n) {
+            tPpMask(m,n) = get<1>(tPcMask(0, m, 0)) < params.seqlen_q
+                           && get<1>(tPcMask(0, 0, n)) < params.seqlen_k;
+          }
+        }
+    }
+#endif
 
     //
     // Copy Atom retiling
@@ -416,6 +443,19 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
 
+        if (params.attn_mask_ptr) {
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, tPcMask, params.seqlen_q, params.seqlen_k, params.unscale_softmax);
+            tPgMask.data() = tPgMask.data() + (-kBlockN);
+            WRITE_MASKED_PRODUCT
+        }
+#if 0
+        if (params.attn_mask_ptr) {
+            flash::apply_attn_mask_v2(scores, reinterpret_cast<Element *>(params.attn_mask_ptr), params.unscale_softmax, n_block * kBlockN, binfo.actual_seqlen_q, binfo.actual_seqlen_k,
+                                     m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
+                                     kNWarps * 16);
+        }
+#endif
+
         // if (cute::thread0()) { print(scores); }
         // We don't put the masking before the matmul S = Q K^T because we don't clear sK
         // for rows outside actual_seqlen_k. So those rows could have Inf / NaN, and the matmul
@@ -442,11 +482,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                                      // m_block * kBlockM + (tidx / 32) * (kBlockM / kNWarps), 16);
         }
 
-        if (params.attn_mask_ptr) {
-            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.unscale_softmax);
-            tPgMask.data() = tPgMask.data() + (-kBlockN);
-            WRITE_MASKED_PRODUCT
-        }
 
         flash::cp_async_wait<0>();
         __syncthreads();
@@ -530,10 +565,17 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         if (params.attn_mask_ptr) {
             cutlass::NumericConverter<float, bfloat16_t> bf162f32;
-            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, params.unscale_softmax);
+            flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, tPcMask, params.seqlen_q, params.seqlen_k, params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockN);
             WRITE_MASKED_PRODUCT
         }
+#if 0
+        if (params.attn_mask_ptr) {
+            flash::apply_attn_mask_v2(scores, reinterpret_cast<Element *>(params.attn_mask_ptr), params.unscale_softmax, n_block * kBlockN, binfo.actual_seqlen_q, binfo.actual_seqlen_k,
+                                     m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
+                                     kNWarps * 16);
+        }
+#endif
 
         softmax_rescale_o</*Is_first=*/false, true>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
 

@@ -468,7 +468,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
 
     const index_t row_offset_mask = ((bidb * params.mask_head_mod_size
         + (bidh % params.mask_head_mod_size)) * params.mask_seq_mod_size
-        + ((m_block_max - 1) * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k_rounded
+        + ((m_block_max - 1) * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k
         + n_block * kBlockN;
 
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),
@@ -498,7 +498,7 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
                                 Shape<Int<kBlockM>>{}, Stride<_1>{});
     Tensor gMask = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_mask),
                                Shape<Int<kBlockM>, Int<kBlockN>>{},
-                               make_stride(params.seqlen_k_rounded, _1{}));
+                               make_stride(params.seqlen_k, _1{}));
 
     Tensor sQ = make_tensor(make_smem_ptr(reinterpret_cast<Element *>(smem_)),
                             typename Kernel_traits::SmemLayoutQdO{});
@@ -565,6 +565,9 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     typename Kernel_traits::TiledMmaSdP tiled_mma_sdp;
     auto gmem_thr_copy_P = make_tiled_copy_C_warpcontiguousN<MMA_N_SdP>(typename Kernel_traits::SmemCopyAtomPdS{}, tiled_mma_sdp).get_thread_slice(tidx);
     Tensor tPgMask = gmem_thr_copy_P.partition_D(gMask);
+    Tensor cMask = make_identity_tensor(shape(gMask));
+    Tensor tPcMask = gmem_thr_copy_P.partition_D(cMask);
+
     auto thr_mma_sdp = tiled_mma_sdp.get_thread_slice(tidx);
     Tensor tSrQ = thr_mma_sdp.partition_fragment_A(sQ);         // (MMA,MMA_N,MMA_K)
     Tensor tSrK = thr_mma_sdp.partition_fragment_B(sK);         // (MMA,MMA_N,MMA_K)
@@ -821,8 +824,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
         // So we need to mask out the elements beyond actual_seqlen_k.
         if (params.attn_mask_ptr) {
-            flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, params.unscale_softmax);
-            tPgMask.data() = tPgMask.data() + (-kBlockM * params.seqlen_k_rounded);
+            flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, tPcMask, params.seqlen_q, params.seqlen_k, params.unscale_softmax);
+            tPgMask.data() = tPgMask.data() + (-kBlockM * params.seqlen_k);
         }
         if (!Is_causal) {
             if (!Is_even_MN && (n_block + 1) * kBlockN >= binfo.actual_seqlen_k) {
