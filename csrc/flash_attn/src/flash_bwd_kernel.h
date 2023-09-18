@@ -445,7 +445,11 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
     if (n_block * kBlockN >= binfo.actual_seqlen_k || binfo.actual_seqlen_q == 0) return;
 
-    int m_block_max = cute::ceil_div(binfo.actual_seqlen_q, kBlockM);
+    const int m_residue = binfo.actual_seqlen_q % kBlockM ? binfo.actual_seqlen_q % kBlockM : kBlockM;
+    const int n_residue = binfo.actual_seqlen_k % kBlockN ? binfo.actual_seqlen_k % kBlockN : kBlockN;
+
+    const int m_block_max = cute::ceil_div(binfo.actual_seqlen_q, kBlockM);
+    const int n_block_max = cute::ceil_div(binfo.actual_seqlen_k, kBlockN);
 
     const index_t row_offset_q = binfo.q_offset(params.q_batch_stride, params.q_row_stride, bidb)
         + (m_block_max - 1) * kBlockM * params.q_row_stride + bidh * params.q_head_stride;
@@ -824,7 +828,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // when we multiply with dP and convert to fp16, resulting in Inf in dS and NaNs in dQ.
         // So we need to mask out the elements beyond actual_seqlen_k.
         if (params.attn_mask_ptr) {
-            flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, tPcMask, params.seqlen_q, params.seqlen_k, params.unscale_softmax);
+            flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, tPcMask,
+                                                               m_block == m_block_max - 1 ? m_residue : binfo.actual_seqlen_q,
+                                                               n_block == n_block_max - 1 ? n_residue : binfo.actual_seqlen_k,
+                                                               params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockM * params.seqlen_k);
         }
         if (!Is_causal) {
