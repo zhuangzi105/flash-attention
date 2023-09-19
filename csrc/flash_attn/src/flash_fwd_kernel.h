@@ -107,7 +107,6 @@ template<typename Engine0, typename Layout0, typename Engine1, typename Layout1,
 inline __device__ void write_softmax_to_gmem(
     Tensor<Engine0, Layout0> const &tOrP, Tensor<Engine1, Layout1> &tPgP, TiledCopy gmem_tiled_copy_P
 ) {
-#if 0
     // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
     Layout l = tOrP.layout();
     Tensor tPrP = make_tensor(tOrP.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
@@ -117,11 +116,10 @@ inline __device__ void write_softmax_to_gmem(
     for (int mi = 0; mi < size<1>(tPrP); ++mi) {
         cute::copy(gmem_tiled_copy_P, tPrP(_, mi), tPgP(_, mi, 0));
     }
-#endif
 };
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_N, bool Is_even_K, bool Return_softmax, typename Params>
+template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_N, bool Is_even_K, bool Return_softmax, bool Is_attn_mask, typename Params>
 inline __device__ void compute_attn_1rowblock(const Params &params, const int bidb, const int bidh, const int m_block) {
 
     using Element = typename Kernel_traits::Element;
@@ -190,13 +188,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                             Shape<Int<kBlockM>, Int<kBlockN>>{},
                             make_stride(params.seqlen_k_rounded, _1{}));
 
-    // TODO(umiswing): mask_seq_mod_size is seqlen_q_rounded or 1.
-    // When mask_seq_mod_size == 1, gM should have following layout.
-    // Tensor gM = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_m),
-    //                         Shape<Int<1>, Int<kBlockN>>{},
-    //                         make_stride(params.seqlen_k_rounded, _1{}));
-
-    // umiswing: should this be Element or ElementAccum?
     Tensor gMask = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.attn_mask_ptr) + row_offset_mask),
                                Shape<Int<kBlockM>, Int<kBlockN>>{},
                                make_stride(params.seqlen_k, _1{}));
@@ -222,10 +213,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     Tensor tVgV = gmem_thr_copy_QKV.partition_S(gV);  // (VCPY, VCPY_N, VCPY_K)
     Tensor tVsV = gmem_thr_copy_QKV.partition_D(sV);
     Tensor tPgP = gmem_thr_copy_P.partition_D(gP);
-    // TODO(umiswing): support mask_seq_mod_size == 1
-#if 0
-    Tensor tPgMask = gmem_thr_copy_P.partition_D(gMask);
-#endif
 
     typename Kernel_traits::TiledMma tiled_mma;
     auto thr_mma = tiled_mma.get_thread_slice(tidx);
@@ -392,7 +379,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
 
-        if (params.attn_mask_ptr) {
+        if (Is_attn_mask) {
             flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, tPcMask,
                                                             m_block == m_block_max - 1 ? m_residue : binfo.actual_seqlen_q,
                                                             n_block == n_block_max - 1 ? n_residue : binfo.actual_seqlen_k,
@@ -440,8 +427,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         // TODO: when we have key_padding_mask we'll need to Check_inf
         masking_step == 0
-            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/true>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
-            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/true>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
+            ? softmax_rescale_o</*Is_first=*/true,  /*Check_inf=*/Is_causal || Is_attn_mask>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2)
+            : softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_attn_mask>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
 
         // Convert scores from fp32 to fp16/bf16
         Tensor rP = flash::convert_type<Element>(scores);
@@ -506,7 +493,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         // Reshape acc_s from (MMA=4, MMA_M, MMA_N) to (nrow=(2, MMA_M), ncol=(2, MMA_N))
         Tensor scores = make_tensor(acc_s.data(), flash::convert_layout_acc_rowcol(acc_s.layout()));
 
-        if (params.attn_mask_ptr) {
+        if (Is_attn_mask) {
             flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, tPcMask,
                                                             m_block == m_block_max - 1 ? m_residue : binfo.actual_seqlen_q,
                                                             n_block == n_block_max - 1 ? n_residue : binfo.actual_seqlen_k,
@@ -514,15 +501,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
             tPgMask.data() = tPgMask.data() + (-kBlockN);
         }
 
-#if 0
-        if (params.attn_mask_ptr) {
-            flash::apply_attn_mask_v2(scores, reinterpret_cast<Element *>(params.attn_mask_ptr), params.unscale_softmax, n_block * kBlockN, binfo.actual_seqlen_q, binfo.actual_seqlen_k,
-                                     m_block * kBlockM + (tidx / 32) * 16 + (tidx % 32) / 4,
-                                     kNWarps * 16);
-        }
-#endif
-
-        softmax_rescale_o</*Is_first=*/false, true>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
+        softmax_rescale_o</*Is_first=*/false, /*Check_inf=*/Is_causal || Is_attn_mask>(scores, scores_max, scores_sum, acc_o, params.scale_softmax_log2);
 
         Tensor rP = flash::convert_type<Element>(scores);
         // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
@@ -630,7 +609,7 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_N, bool Is_even_K, bool Return_softmax, typename Params>
+template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_N, bool Is_even_K, bool Return_softmax, bool Is_attn_mask, typename Params>
 inline __device__ void compute_attn(const Params &params) {
     const int m_block = blockIdx.x;
     // The block index for the batch.
@@ -646,7 +625,7 @@ inline __device__ void compute_attn(const Params &params) {
     // the attention matrix. This way, as long as we have the batch, head, and the location of
     // the 16 x 32 block within the attention matrix, we can generate the exact same dropout pattern.
 
-    flash::compute_attn_1rowblock<Kernel_traits, Is_dropout, Is_causal, Is_even_N, Is_even_K, Return_softmax>(params, bidb, bidh, m_block);
+    flash::compute_attn_1rowblock<Kernel_traits, Is_dropout, Is_causal, Is_even_N, Is_even_K, Return_softmax, Is_attn_mask>(params, bidb, bidh, m_block);
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

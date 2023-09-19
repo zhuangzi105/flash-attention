@@ -177,8 +177,10 @@ inline __device__ void apply_mask_causal(Tensor<Engine, Layout> &tensor, const u
     }
 }
 
+// TODO(umiswing): support cu_attn_mask
+// This kernel should work after dealing with input cu_seq indicating mask position.
 template <typename Engine, typename Layout, typename T>
-inline __device__ void apply_attn_mask_v2(Tensor<Engine, Layout> &tensor, const T* const mask, const float unscale_softmax, const uint32_t col_idx_offset_,
+inline __device__ void apply_cu_attn_mask(Tensor<Engine, Layout> &tensor, const T* const mask, const float unscale_softmax, const uint32_t col_idx_offset_,
                                          const uint32_t max_seqlen_q, const uint32_t max_seqlen_k, const uint32_t row_idx_offset_,
                                          const uint32_t warp_row_stride) {
     // tensor has shape (ncol=(2, MMA_M), nrow=(2, MMA_N))
@@ -204,11 +206,6 @@ inline __device__ void apply_attn_mask_v2(Tensor<Engine, Layout> &tensor, const 
                     }
                 }
             }
-            // if (cute::thread0()) {
-            //     printf("mi = %d, i = %d, row_idx = %d, max_seqlen_k = %d\n", mi, i, row_idx, max_seqlen_k);
-            //     print(tensor(make_coord(i, mi), _));
-            //     // print(tensor(_, j + nj * size<1, 0>(tensor)));
-            // }
         }
     }
 }
@@ -256,10 +253,7 @@ inline __device__ void apply_attn_mask(
     // CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgMask));
     #pragma unroll
     for (int i = 0; i < size(tPrScores); ++i) {
-        // TODO(umiswing): support mask_seq_mod_size == 1
-        // umiswing: we must compute softmax scale here for correctness.
         if (elem_less(tPcMask(i), make_coord(seqlen_q, seqlen_k))) {
-        // if (get<0>(tPcMask(i)) < seqlen_q && get<1>(tPcMask(i)) < seqlen_k) {
             tPrScores(i) = tPrScores(i) + tPgMask(i) * unscale_softmax;
         }
     }
