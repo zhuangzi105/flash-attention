@@ -64,6 +64,30 @@ const char *flash_attn_error() {
 #define FLASHATTNLIB_BEGIN_FUNC try {
 #define FLASHATTNLIB_END_FUNC } catch (::std::exception &__e) { flash_attn_set_error(__e.what()); return false; } catch (...) { flash_attn_set_error(nullptr); return false; }
 
+#define CHECK_FWD_EXECTUABLE(__seqlen_q, __seqlen_k)                     \
+      auto dprops = at::cuda::getCurrentDeviceProperties();              \
+      const bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;     \
+      const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;     \
+      ASSERT_CHECK(is_sm8x || is_sm90);                                  \
+      ASSERT_CHECK(batch_size > 0);                                      \
+      ASSERT_CHECK(head_size % 8 == 0);                                  \
+      ASSERT_CHECK(head_size <= 256);                                    \
+      ASSERT_CHECK(num_heads == num_heads_k);                            \
+      if (attn_mask) {                                                   \
+          ASSERT_CHECK(mask_dims[0] == batch_size);                      \
+          ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);  \
+          ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == __seqlen_q); \
+          ASSERT_CHECK(mask_dims[3] == __seqlen_k);                      \
+      }
+
+#define CHECK_BWD_EXECTUABLE(__seqlen_q, __seqlen_k)                                       \
+      CHECK_FWD_EXECTUABLE(__seqlen_q, __seqlen_k)                                         \
+      const bool is_sm80 = dprops->major == 8 && dprops->minor == 0;                       \
+      if (head_size > 192) {                                                               \
+          /* FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800 */ \
+          ASSERT_CHECK(is_sm80 || is_sm90);                                                \
+      }
+
 void set_params_fprop(Flash_fwd_params &params,
                       // sizes
                       const size_t b,
@@ -287,24 +311,11 @@ bool flash_attn_fwd(const void * const q,
                     const void * const attn_mask,
                     const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
-    auto dprops = at::cuda::getCurrentDeviceProperties();
-
-    const bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
-    const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
     const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
 
-    ASSERT_CHECK(is_sm8x || is_sm90);
-    ASSERT_CHECK(batch_size > 0);
-    ASSERT_CHECK(head_size % 8 == 0);
-    ASSERT_CHECK(head_size <= 256);
-    ASSERT_CHECK(num_heads == num_heads_k);
-
-    if (attn_mask) {
-        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
-        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == seqlen_q);
-    }
+    CHECK_FWD_EXECTUABLE(seqlen_q, seqlen_k)
 
     Flash_fwd_params params;
     set_params_fprop(params,
@@ -376,24 +387,11 @@ bool flash_attn_varlen_fwd(const void * const q,
                            const void * const attn_mask,
                            const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
-    auto dprops = at::cuda::getCurrentDeviceProperties();
-
-    const bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
-    const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
     const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
 
-    ASSERT_CHECK(is_sm8x || is_sm90);
-    ASSERT_CHECK(batch_size > 0);
-    ASSERT_CHECK(head_size <= 256);
-    ASSERT_CHECK(num_heads == num_heads_k);
-    ASSERT_CHECK(head_size % 8 == 0);
-
-    if (attn_mask) {
-        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
-        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q);
-    }
+    CHECK_FWD_EXECTUABLE(max_seqlen_q, max_seqlen_k)
     
     Flash_fwd_params params;
     set_params_fprop(params,
@@ -487,29 +485,11 @@ bool flash_attn_bwd(const void * const dout,
                     const void * const attn_mask,
                     const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
-    auto dprops = at::cuda::getCurrentDeviceProperties();
-
-    const bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
-    const bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
-    const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
     const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
 
-    ASSERT_CHECK(is_sm8x || is_sm90);
-    ASSERT_CHECK(batch_size > 0);
-    if (head_size > 192) {
-        // FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
-        ASSERT_CHECK(is_sm80 || is_sm90);
-    }
-    ASSERT_CHECK(num_heads == num_heads_k);
-    ASSERT_CHECK(head_size % 8 == 0);
-    ASSERT_CHECK(head_size <= 256);
-
-    if (attn_mask) {
-        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
-        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == seqlen_q);
-    }
+    CHECK_BWD_EXECTUABLE(seqlen_q, seqlen_k)
 
     // bool loop = seqlen_k > blocksize_c;
     // TODO: change later, for now set to true for simplicity
@@ -601,31 +581,13 @@ bool flash_attn_varlen_bwd(const void * const dout,
                            const void * const attn_mask,
                            const int64_t * const mask_dims) {
     FLASHATTNLIB_BEGIN_FUNC
-    auto dprops = at::cuda::getCurrentDeviceProperties();
-
-    const bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
-    const bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
-    const bool is_sm90 = dprops->major == 9 && dprops->minor == 0;
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
     const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
 
     const bool loop = true;
 
-    ASSERT_CHECK(is_sm8x || is_sm90);
-    ASSERT_CHECK(batch_size > 0);
-    ASSERT_CHECK(head_size <= 256);
-    if (head_size > 192) {
-        // FlashAttention backward for head dim > 192 requires A100/A800 or H100/H800
-        ASSERT_CHECK(is_sm80 || is_sm90);
-    }
-    ASSERT_CHECK(num_heads == num_heads_k);
-    ASSERT_CHECK(head_size % 8 == 0);
-
-    if (attn_mask) {
-        ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
-        ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q);
-    }
+    CHECK_BWD_EXECTUABLE(max_seqlen_q, max_seqlen_k)
 
     Flash_bwd_params params;
 
