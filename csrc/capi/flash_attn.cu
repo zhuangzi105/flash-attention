@@ -30,8 +30,8 @@
         if (!__cond_var) {                               \
           ::std::string __err_msg = ::std::string("`") + \
                 #__cond + "` check failed at " +         \
-		__FILE__ + ":" +                         \
-		::std::to_string(__LINE__);              \
+                __FILE__ + ":" +                         \
+                ::std::to_string(__LINE__);              \
           throw std::runtime_error(__err_msg);           \
         }                                                \
       } while (0)
@@ -320,23 +320,23 @@ bool flash_attn_fwd(const void * const q,
     Flash_fwd_params params;
     set_params_fprop(params,
                      batch_size,
-		     seqlen_q, seqlen_k,
-		     seqlen_q_rounded, seqlen_k_rounded,
-		     num_heads, num_heads_k,
-		     head_size, head_size_rounded,
-		     const_cast<void *>(q),
-		     const_cast<void *>(k),
-		     const_cast<void *>(v),
-		     out,
-		     /*cu_seqlens_q_d=*/nullptr,
-		     /*cu_seqlens_k_d=*/nullptr,
-		     return_softmax ? softmax_ptr : nullptr,
-		     softmax_lse_ptr,
-		     p_dropout,
-		     softmax_scale,
+                     seqlen_q, seqlen_k,
+                     seqlen_q_rounded, seqlen_k_rounded,
+                     num_heads, num_heads_k,
+                     head_size, head_size_rounded,
+                     const_cast<void *>(q),
+                     const_cast<void *>(k),
+                     const_cast<void *>(v),
+                     out,
+                     /*cu_seqlens_q_d=*/nullptr,
+                     /*cu_seqlens_k_d=*/nullptr,
+                     return_softmax ? softmax_ptr : nullptr,
+                     softmax_lse_ptr,
+                     p_dropout,
+                     softmax_scale,
                      softmax_unscale,
-		     is_causal,
-		     is_bf16,
+                     is_causal,
+                     is_bf16,
                      const_cast<void *>(attn_mask),
                      mask_head_mod_size,
                      mask_seq_mod_size);
@@ -349,7 +349,7 @@ bool flash_attn_fwd(const void * const q,
         // We use a custom RNG that increases the offset by batch_size * nheads * 32.
         params.philox_args = at::PhiloxCudaState(seed, offset);
     }
-	
+
     run_mha_fwd(params, stream);
     
     return true;
@@ -396,23 +396,23 @@ bool flash_attn_varlen_fwd(const void * const q,
     Flash_fwd_params params;
     set_params_fprop(params,
                      batch_size,
-		     max_seqlen_q, max_seqlen_k,
-		     seqlen_q_rounded, seqlen_k_rounded,
-		     num_heads, num_heads_k,
-		     head_size, head_size_rounded,
-		     const_cast<void *>(q),
-		     const_cast<void *>(k),
-		     const_cast<void *>(v),
-		     out,
-		     const_cast<int32_t *>(cu_seqlens_q),
-		     const_cast<int32_t *>(cu_seqlens_k),
-		     return_softmax ? softmax_ptr : nullptr,
-		     softmax_lse_ptr,
-		     p_dropout,
-		     softmax_scale,
+                     max_seqlen_q, max_seqlen_k,
+                     seqlen_q_rounded, seqlen_k_rounded,
+                     num_heads, num_heads_k,
+                     head_size, head_size_rounded,
+                     const_cast<void *>(q),
+                     const_cast<void *>(k),
+                     const_cast<void *>(v),
+                     out,
+                     const_cast<int32_t *>(cu_seqlens_q),
+                     const_cast<int32_t *>(cu_seqlens_k),
+                     return_softmax ? softmax_ptr : nullptr,
+                     softmax_lse_ptr,
+                     p_dropout,
+                     softmax_scale,
                      softmax_unscale,
-		     is_causal,
-		     is_bf16,
+                     is_causal,
+                     is_bf16,
                      const_cast<void *>(attn_mask),
                      mask_head_mod_size,
                      mask_seq_mod_size);
@@ -598,9 +598,9 @@ bool flash_attn_varlen_bwd(const void * const dout,
                      num_heads, num_heads_k,
                      head_size, head_size_rounded,
                      const_cast<void*>(q),
-		     const_cast<void*>(k),
-		     const_cast<void*>(v),
-		     const_cast<void*>(out),
+                     const_cast<void*>(k),
+                     const_cast<void*>(v),
+                     const_cast<void*>(out),
                      const_cast<void*>(dout),
                      dq,
                      dk,
