@@ -172,8 +172,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
         + m_block * kBlockM) * params.seqlen_k_rounded + (n_block_max - 1) * kBlockN;
 
     const index_t row_offset_mask = ((bidb * params.mask_head_mod_size
-        + (bidh % params.mask_head_mod_size)) * params.mask_seq_mod_size
-        + (m_block * kBlockM % params.mask_seq_mod_size)) * params.seqlen_k
+        + (bidh % params.mask_head_mod_size)) * params.mask_seq_q_mod_size
+        + (m_block * kBlockM % params.mask_seq_q_mod_size)) * params.seqlen_k
         + (n_block_max - 1) * kBlockN;
 
     Tensor gQ = make_tensor(make_gmem_ptr(reinterpret_cast<Element *>(params.q_ptr) + row_offset_q),

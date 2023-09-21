@@ -115,7 +115,7 @@ void set_params_fprop(Flash_fwd_params &params,
                       bool is_bf16,
                       void * attn_mask = nullptr,
                       int mask_head_mod_size = 0,
-                      int mask_seq_mod_size = 0) {
+                      int mask_seq_q_mod_size = 0) {
     // Reset the parameters
     memset(&params, 0, sizeof(params));
 
@@ -167,7 +167,7 @@ void set_params_fprop(Flash_fwd_params &params,
     // attn mask
     params.attn_mask_ptr = attn_mask;
     params.mask_head_mod_size = mask_head_mod_size;
-    params.mask_seq_mod_size = mask_seq_mod_size;
+    params.mask_seq_q_mod_size = mask_seq_q_mod_size;
 
     // Set the different scale values.
     params.scale_softmax = softmax_scale;
@@ -223,7 +223,7 @@ void set_params_dgrad(Flash_bwd_params &params,
                       const int num_splits = 0,
                       void * attn_mask = nullptr,
                       int mask_head_mod_size = 0,
-                      int mask_seq_mod_size = 0) {
+                      int mask_seq_q_mod_size = 0) {
 
     set_params_fprop(params,
                      b, seqlen_q, seqlen_k, seqlen_q_rounded, seqlen_k_rounded, h, h_k, d, d_rounded,
@@ -239,7 +239,7 @@ void set_params_dgrad(Flash_bwd_params &params,
                      is_bf16,
                      attn_mask,
                      mask_head_mod_size,
-                     mask_seq_mod_size);
+                     mask_seq_q_mod_size);
 
     // Set the pointers and strides.
     params.do_ptr = dout;
@@ -313,7 +313,7 @@ bool flash_attn_fwd(const void * const q,
     FLASHATTNLIB_BEGIN_FUNC
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
-    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
+    const int mask_seq_q_mod_size = attn_mask ? mask_dims[2] : 0;
 
     CHECK_FWD_EXECTUABLE(seqlen_q, seqlen_k)
 
@@ -339,7 +339,7 @@ bool flash_attn_fwd(const void * const q,
                      is_bf16,
                      const_cast<void *>(attn_mask),
                      mask_head_mod_size,
-                     mask_seq_mod_size);
+                     mask_seq_q_mod_size);
 
     params.rng_state = static_cast<uint64_t*>(rng_state);
 
@@ -389,7 +389,7 @@ bool flash_attn_varlen_fwd(const void * const q,
     FLASHATTNLIB_BEGIN_FUNC
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
-    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
+    const int mask_seq_q_mod_size = attn_mask ? mask_dims[2] : 0;
 
     CHECK_FWD_EXECTUABLE(max_seqlen_q, max_seqlen_k)
     
@@ -415,7 +415,7 @@ bool flash_attn_varlen_fwd(const void * const q,
                      is_bf16,
                      const_cast<void *>(attn_mask),
                      mask_head_mod_size,
-                     mask_seq_mod_size);
+                     mask_seq_q_mod_size);
     
     params.rng_state = static_cast<uint64_t*>(rng_state);
 
@@ -487,7 +487,7 @@ bool flash_attn_bwd(const void * const dout,
     FLASHATTNLIB_BEGIN_FUNC
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
-    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
+    const int mask_seq_q_mod_size = attn_mask ? mask_dims[2] : 0;
 
     CHECK_BWD_EXECTUABLE(seqlen_q, seqlen_k)
 
@@ -526,7 +526,7 @@ bool flash_attn_bwd(const void * const dout,
                      num_splits,
                      const_cast<void *>(attn_mask),
                      mask_head_mod_size,
-                     mask_seq_mod_size);
+                     mask_seq_q_mod_size);
 
     auto launch = &run_mha_bwd;
     
@@ -583,7 +583,7 @@ bool flash_attn_varlen_bwd(const void * const dout,
     FLASHATTNLIB_BEGIN_FUNC
     const bool is_dropout = p_dropout > 0.0;
     const int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
-    const int mask_seq_mod_size = attn_mask ? mask_dims[2] : 0;
+    const int mask_seq_q_mod_size = attn_mask ? mask_dims[2] : 0;
 
     const bool loop = true;
 
@@ -620,7 +620,7 @@ bool flash_attn_varlen_bwd(const void * const dout,
                      num_splits,
                      const_cast<void *>(attn_mask),
                      mask_head_mod_size,
-                     mask_seq_mod_size);
+                     mask_seq_q_mod_size);
 
     auto launch = &run_mha_bwd;
 
