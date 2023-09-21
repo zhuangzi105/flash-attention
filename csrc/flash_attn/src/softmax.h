@@ -240,17 +240,14 @@ inline __device__ void apply_mask_causal_w_idx(
 template<typename TiledMma, typename Engine0, typename Layout0, typename Engine1, typename Layout1, typename  Engine2, typename Layout2>
 inline __device__ void apply_attn_mask(
     Tensor<Engine0, Layout0> &scores, Tensor<Engine1, Layout1> const &tPgMask, Tensor<Engine2, Layout2> const &tPcMask, const int seqlen_q, const int seqlen_k, const float unscale_softmax) {
-    // Reshape rP from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
+    // Reshape scores from (nrow=(2, MMA_M), ncol=(2, MMA_N)) to ((2, 2, 2), MMA_M, MMA_N / 2)
     // if using m16n8k16 or ((2, 2, 1), MMA_M, MMA_N) if using m16n8k8.
     Tensor tOrScores = make_tensor(scores.data(), flash::convert_layout_rowcol_Aregs<TiledMma>(scores.layout()));
 
-    // Reshape tOrP from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
+    // Reshape tOrScores from (8, MMA_M, MMA_N) to (8, MMA_M * MMA_N)
     Layout l = tOrScores.layout();
     Tensor tPrScores = make_tensor(tOrScores.data(), make_layout(get<0>(l), make_layout(get<1>(l), get<2>(l))));
 
-    // TODO(umiswing): add assert here
-    // CUTE_STATIC_ASSERT_V(size<2>(tPgMask) == _1{});
-    // CUTE_STATIC_ASSERT_V(size<1>(tPrScores) == size<1>(tPgMask));
     #pragma unroll
     for (int i = 0; i < size(tPrScores); ++i) {
         if (elem_less(tPcMask(i), make_coord(seqlen_q, seqlen_k))) {
