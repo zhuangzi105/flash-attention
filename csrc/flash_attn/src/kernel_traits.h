@@ -373,24 +373,6 @@ struct Flash_bwd_kernel_traits : public Base {
                         Layout<Shape <_8, _32>,  // Thread layout, 8 threads per row
                                Stride<_32, _1>>{},
                         Layout<Shape < _1, _1>>{}));  // Val layout, 1 val per store
-
-   // TODO(umiswing): Declare tile rule of gMask directly to make code more elegent.
-  //  But idk why following rule not work :(
-#if 0
-   using GmemLayoutAtomP = Layout<Shape<Shape<_8, _4>, Shape<_4, _2>>,
-                                   Stride<Stride<_4, _64>, Shape<_1, _32>>>;
-
-   // maybe the vallayout should be ((_1,(_2,_2,_2)),_2,_4):((_0,(_1,1024,_8)),8192,_16)
-   using ValLayout = Layout<Shape<Shape<_2>, Shape<_1, _2, _2>>,
-                             Stride<Stride<_1024>, Stride<_0, _1, _8>>>;
-
-    using GmemTiledCopyP = decltype(
-        // make_tiled_copy(Copy_Atom<DefaultCopy, elem_type>{},
-        make_tiled_copy(Copy_Atom<UniversalCopy<elem_type>, elem_type>{},
-                        GmemLayoutAtomP{},
-                        ValLayout{}));  // Val layout, 2 vals per store
-#endif
-
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

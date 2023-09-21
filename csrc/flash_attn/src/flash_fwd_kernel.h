@@ -19,8 +19,6 @@
 #include "softmax.h"
 #include "philox.cuh"
 
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 namespace flash {
 
 using namespace cute;
@@ -117,6 +115,7 @@ inline __device__ void write_softmax_to_gmem(
         cute::copy(gmem_tiled_copy_P, tPrP(_, mi), tPgP(_, mi, 0));
     }
 };
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<typename Kernel_traits, bool Is_dropout, bool Is_causal, bool Is_even_N, bool Is_even_K, bool Return_softmax, bool Is_attn_mask, typename Params>
@@ -143,8 +142,10 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
     const BlockInfo</*Varlen=*/!Is_even_N> binfo(params, bidb);
     if (m_block * kBlockM >= binfo.actual_seqlen_q || binfo.actual_seqlen_k == 0) return;
 
-    const int m_residue = binfo.actual_seqlen_q % kBlockM ? binfo.actual_seqlen_q % kBlockM : kBlockM;
-    const int n_residue = binfo.actual_seqlen_k % kBlockN ? binfo.actual_seqlen_k % kBlockN : kBlockN;
+    // umiswing: residue is for predication of additional mask gmem access.
+    // Additional mask for varlen qkv is supported, but a varlen mask is not supported.
+    const int m_residue = params.seqlen_q % kBlockM ? params.seqlen_q % kBlockM : kBlockM;
+    const int n_residue = params.seqlen_k % kBlockN ? params.seqlen_k % kBlockN : kBlockN;
 
     const int m_block_max = cute::ceil_div(binfo.actual_seqlen_q, kBlockM);
 
@@ -381,8 +382,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         if (Is_attn_mask) {
             flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, tPcMask,
-                                                            m_block == m_block_max - 1 ? m_residue : binfo.actual_seqlen_q,
-                                                            n_block == n_block_max - 1 ? n_residue : binfo.actual_seqlen_k,
+                                                            m_block == m_block_max - 1 ? m_residue : params.seqlen_q,
+                                                            n_block == n_block_max - 1 ? n_residue : params.seqlen_k,
                                                             params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockN);
         }
@@ -412,7 +413,6 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
                                      // m_block * kBlockM + (tidx / 32) * 16, kNWarps * 16);
                                      // m_block * kBlockM + (tidx / 32) * (kBlockM / kNWarps), 16);
         }
-
 
         flash::cp_async_wait<0>();
         __syncthreads();
@@ -495,8 +495,8 @@ inline __device__ void compute_attn_1rowblock(const Params &params, const int bi
 
         if (Is_attn_mask) {
             flash::apply_attn_mask<Kernel_traits::TiledMma>(scores, tPgMask, tPcMask,
-                                                            m_block == m_block_max - 1 ? m_residue : binfo.actual_seqlen_q,
-                                                            n_block == n_block_max - 1 ? n_residue : binfo.actual_seqlen_k,
+                                                            m_block == m_block_max - 1 ? m_residue : params.seqlen_q,
+                                                            n_block == n_block_max - 1 ? n_residue : params.seqlen_k,
                                                             params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockN);
         }

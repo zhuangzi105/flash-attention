@@ -20,6 +20,8 @@
 
 namespace flash {
 
+using namespace cute;
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <int MMA_N,
@@ -446,8 +448,10 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
     const BlockInfo</*Varlen=*/!Is_even_MN> binfo(params, bidb);
     if (n_block * kBlockN >= binfo.actual_seqlen_k || binfo.actual_seqlen_q == 0) return;
 
-    const int m_residue = binfo.actual_seqlen_q % kBlockM ? binfo.actual_seqlen_q % kBlockM : kBlockM;
-    const int n_residue = binfo.actual_seqlen_k % kBlockN ? binfo.actual_seqlen_k % kBlockN : kBlockN;
+    // umiswing: residue is for predication of additional mask gmem access.
+    // Additional mask for varlen qkv is supported, but a varlen mask is not supported.
+    const int m_residue = params.seqlen_q % kBlockM ? params.seqlen_q % kBlockM : kBlockM;
+    const int n_residue = params.seqlen_k % kBlockN ? params.seqlen_k % kBlockN : kBlockN;
 
     const int m_block_max = cute::ceil_div(binfo.actual_seqlen_q, kBlockM);
     const int n_block_max = cute::ceil_div(binfo.actual_seqlen_k, kBlockN);
@@ -830,8 +834,8 @@ inline __device__ void compute_dq_dk_dv_1colblock(const Params &params, const in
         // So we need to mask out the elements beyond actual_seqlen_k.
         if (Is_attn_mask) {
             flash::apply_attn_mask<Kernel_traits::TiledMmaSdP>(scores, tPgMask, tPcMask,
-                                                               m_block == m_block_max - 1 ? m_residue : binfo.actual_seqlen_q,
-                                                               n_block == n_block_max - 1 ? n_residue : binfo.actual_seqlen_k,
+                                                               m_block == m_block_max - 1 ? m_residue : params.seqlen_q,
+                                                               n_block == n_block_max - 1 ? n_residue : params.seqlen_k,
                                                                params.unscale_softmax);
             tPgMask.data() = tPgMask.data() + (-kBlockM * params.seqlen_k);
         }
