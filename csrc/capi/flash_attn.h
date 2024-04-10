@@ -37,7 +37,19 @@ bool flash_attn_fwd(const void * const q,         // batch_size x seqlen_q x num
                     const int64_t * const mask_dims,
                     const void * const attn_mask_start_row_indices,
                     const int64_t * const attn_mask_start_row_indices_dims,
-                    const int attn_mask_start_row);
+                    const int attn_mask_start_row,
+                    const int q_row_stride,
+                    const int k_row_stride,
+                    const int v_row_stride,
+                    const int q_head_stride,
+                    const int k_head_stride,
+                    const int v_head_stride,
+                    const int o_row_stride,
+                    const int o_head_stride,
+                    const int q_batch_stride,
+                    const int k_batch_stride,
+                    const int v_batch_stride,
+                    const int o_batch_stride);
 
 bool flash_attn_varlen_fwd(const void * const q,  // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
                            const void * const k,  // total_k x num_heads_k x head_size, total_k := \sum_{i=0}^{b} s_i
@@ -67,7 +79,20 @@ bool flash_attn_varlen_fwd(const void * const q,  // total_q x num_heads x head_
                            uint64_t seed,
                            uint64_t offset,
                            const void * const attn_mask,
-                           const void * const mask_dims);
+                           const void * const mask_dims,
+                           const int q_row_stride,
+                           const int k_row_stride,
+                           const int v_row_stride,
+                           const int q_head_stride,
+                           const int k_head_stride,
+                           const int v_head_stride,
+                           const int o_row_stride,
+                           const int o_head_stride,
+                           const int q_batch_stride,
+                           const int k_batch_stride,
+                           const int v_batch_stride,
+                           const int o_batch_stride,
+                           bool varlen_padded_input);
 
 bool flash_attn_bwd(const void * const dout,  // batch_size x seqlen_q x num_heads, x head_size_og
                     const void * const q,   // batch_size x seqlen_q x num_heads x head_size
@@ -103,7 +128,31 @@ bool flash_attn_bwd(const void * const dout,  // batch_size x seqlen_q x num_hea
                     const int64_t * const mask_dims,
                     const void * const attn_mask_start_row_indices,
                     const int64_t * const attn_mask_start_row_indices_dims,
-                    const int attn_mask_start_row);
+                    const int attn_mask_start_row,
+                    const int q_row_stride,
+                    const int k_row_stride,
+                    const int v_row_stride,
+                    const int q_head_stride,
+                    const int k_head_stride,
+                    const int v_head_stride,
+                    const int o_row_stride,
+                    const int o_head_stride,
+                    const int q_batch_stride,
+                    const int k_batch_stride,
+                    const int v_batch_stride,
+                    const int o_batch_stride,
+                    const int dq_row_stride,
+                    const int dk_row_stride,
+                    const int dv_row_stride,
+                    const int dq_head_stride,
+                    const int dk_head_stride,
+                    const int dv_head_stride,
+                    const int do_row_stride,
+                    const int do_head_stride,
+                    const int dq_batch_stride,
+                    const int dk_batch_stride,
+                    const int dv_batch_stride,
+                    const int do_batch_stride);
 
 bool flash_attn_varlen_bwd(const void * const dout,  // total_q x num_heads, x head_size
                            const void * const q,   // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
@@ -138,7 +187,32 @@ bool flash_attn_varlen_bwd(const void * const dout,  // total_q x num_heads, x h
                            uint64_t seed,
                            uint64_t offset,
                            const void * attn_mask,
-                           const int64_t * const mask_dims);
+                           const int64_t * const mask_dims,
+                           const int q_row_stride,
+                           const int k_row_stride,
+                           const int v_row_stride,
+                           const int q_head_stride,
+                           const int k_head_stride,
+                           const int v_head_stride,
+                           const int o_row_stride,
+                           const int o_head_stride,
+                           const int q_batch_stride,
+                           const int k_batch_stride,
+                           const int v_batch_stride,
+                           const int o_batch_stride,
+                           const int dq_row_stride,
+                           const int dk_row_stride,
+                           const int dv_row_stride,
+                           const int dq_head_stride,
+                           const int dk_head_stride,
+                           const int dv_head_stride,
+                           const int do_row_stride,
+                           const int do_head_stride,
+                           const int dq_batch_stride,
+                           const int dk_batch_stride,
+                           const int dv_batch_stride,
+                           const int do_batch_stride,
+                           const bool varlen_padded_input);
 
 bool flash_attn_fwd_with_bias_and_mask(const void *q,              // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
                                        const void *k,              // total_k x num_heads x head_size, total_k := \sum_{i=0}^{b} s_i
