@@ -119,8 +119,7 @@ struct Flash_fwd_kernel_traits : public Base {
     static constexpr int kSmemKVCount = size(SmemLayoutKV{}) * 2;
     static constexpr int kSmemQSize = kSmemQCount * sizeof(Element);
     static constexpr int kSmemKVSize = kSmemKVCount * sizeof(Element);
-    static constexpr int kSmemSparseMaskIndicesSize = kBlockN * sizeof(int32_t);
-    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize + kSmemSparseMaskIndicesSize;
+    static constexpr int kSmemSize = Share_Q_K_smem ? std::max(kSmemQSize, kSmemKVSize) : kSmemQSize + kSmemKVSize;
 
     static constexpr int kGmemElemsPerLoad = sizeof(cute::uint128_t) / sizeof(Element);
     static_assert(kHeadDim % kGmemElemsPerLoad == 0, "kHeadDim must be a multiple of kGmemElemsPerLoad");
@@ -313,16 +312,15 @@ struct Flash_bwd_kernel_traits : public Base {
     static constexpr int kSmemPSize = kSmemPCount * sizeof(Element);
     static constexpr int kSmemdQSize = kSmemdQCount * sizeof(Element);
     static constexpr int kSmemdPsumSize = kSmemdPsumCount * sizeof(ElementAccum);
-    static constexpr int kSmemSparseMaskIndicesSize = kBlockN * sizeof(int32_t);
     static constexpr int kSmemSize = kSmemQdOSize
         + (!Is_V_in_regs
            ? kSmemKVSize + kSmemdSSize + std::max(kSmemPSize, kSmemdQSize)
            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemdSSize + std::max(kSmemPSize, kSmemdQSize)));
-    static constexpr int kSmemSize1colblock = kSmemSparseMaskIndicesSize + kSmemQdOSize
+    static constexpr int kSmemSize1colblock = kSmemQdOSize
         + (!Is_V_in_regs
            ? kSmemKVSize + kSmemdSSize + kSmemPSize
            : std::max(kSmemKVSize, kSmemKVSize / 2 + kSmemdSSize + kSmemPSize));
-    static constexpr int kSmemSize1rowblock = kSmemSparseMaskIndicesSize + kSmemQdOSize / 3 * 2 + kSmemKVSize / 2 * 3
+    static constexpr int kSmemSize1rowblock = kSmemQdOSize / 3 * 2 + kSmemKVSize / 2 * 3
         + kSmemdSSize + kSmemPSize;
 
 
@@ -376,20 +374,5 @@ struct Flash_bwd_kernel_traits : public Base {
                                Stride<_32, _1>>{},
                         Layout<Shape < _1, _1>>{}));  // Val layout, 1 val per store
 };
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
-namespace reduced_scores {
-  template<int kHeadDim_, int kBlockM_, int kBlockN_, int kNWarps_,
-           int AtomLayoutMSdP_=1, int AtomLayoutNdKV=2, int AtomLayoutMdQ=2,
-           bool Is_V_in_regs_=false, bool No_double_buffer_=false, typename elem_type=cutlass::half_t,
-           typename Base=Flash_bwd_kernel_traits<kHeadDim_, kBlockM_, kBlockN_, kNWarps_,
-                                                 AtomLayoutMSdP_, AtomLayoutNdKV, AtomLayoutMdQ,
-                                                 Is_V_in_regs_, No_double_buffer_, elem_type>>
-  struct Kernel_traits : public Base {
-      using Element = typename Base::Element;
-      static constexpr int kSmemSize = (size(typename Base::SmemLayoutQdO{}) + size(typename Base::SmemLayoutKV{})) * sizeof(Element);
-  };
-} // namespace reduced_scores
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
