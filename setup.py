@@ -112,7 +112,9 @@ if not torch.cuda.is_available():
     )
     if os.environ.get("TORCH_CUDA_ARCH_LIST", None) is None and CUDA_HOME is not None:
         _, bare_metal_version = get_cuda_bare_metal_version(CUDA_HOME)
-        if bare_metal_version >= Version("11.8"):
+        if bare_metal_version >= Version("12.8"):
+            os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0;8.6;9.0;10.0"
+        elif bare_metal_version >= Version("11.8"):
             os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0;8.6;9.0"
         elif bare_metal_version >= Version("11.4"):
             os.environ["TORCH_CUDA_ARCH_LIST"] = "8.0;8.6"
@@ -151,6 +153,10 @@ if not SKIP_CUDA_BUILD:
     if bare_metal_version >= Version("11.8"):
         cc_flag.append("-gencode")
         cc_flag.append("arch=compute_90,code=sm_90")
+    # CUDA >= 12.8 add support for sm_100
+    if bare_metal_version >= Version("12.8"):
+        cc_flag.append("-gencode")
+        cc_flag.append("arch=compute_100,code=sm_100")
 
     # HACK: The compiler flag -D_GLIBCXX_USE_CXX11_ABI is set to be the same as
     # torch._C._GLIBCXX_USE_CXX11_ABI
