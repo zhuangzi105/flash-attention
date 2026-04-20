@@ -68,10 +68,17 @@ struct FMHA_fprop_params : public Qkv_params {
     void * __restrict__ attn_mask_ptr;
     int mask_head_mod_size;
     int mask_seq_mod_size;
+    int mask_row_stride;  // physical last-dim of mask tensor = mask_dims[3] = msl
 
     // The attn bias matrix
     void * __restrict__ attn_bias_ptr;
     int bias_mod_size;
+    int bias_row_stride;  // physical last-dim of bias tensor = bias_dims[3] = msl
+    // Bias layout: 0 = [num_seqs, H, msl, msl] (legacy 4-D)
+    //              1 = [total_S, H, msl] (row-packed 3-D)
+    //              2 = compact varlen [H*sum(T_i²)], indexed via bias_seq_offsets
+    int bias_layout;
+    int * __restrict__ bias_seq_offsets;  // layout=2: H*T_i² prefix sum [num_seqs+1]
 
     // The ds matrix
     void * __restrict__ attn_ds_ptr;
@@ -132,6 +139,14 @@ struct FMHA_fprop_params : public Qkv_params {
     bool is_causal;
 
     int num_splits; // How many SMs per attention matrix.
+
+    // Total token counts (sum of all sequence lengths) -- needed by SM90 varlen kernel
+    int total_q;
+    int total_k;
+
+    // SM90 fields for persistent scheduler & arch dispatch
+    int arch;       // GPU compute capability major (e.g. 8 for SM80, 9 for SM90)
+    int num_sm;     // Number of SMs on the device (for persistent tile scheduler)
 };
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -217,3 +232,6 @@ bool run_fmha_bwd_with_mask_bias_hdim128(FMHA_dgrad_params &params, cudaStream_t
 void run_fmha_block_fp16_sm80(Launch_params<FMHA_fprop_params> &launch_params, const bool configure);
 
 void run_fmha_block_dgrad_fp16_sm80(const FMHA_dgrad_params &params, cudaStream_t stream);
+
+// SM90 TMA+WGMMA dispatch uses separate interface (sm90/fmha_sm90_interface.h)
+// to avoid Qkv_params naming conflict with FA3's flash.h
