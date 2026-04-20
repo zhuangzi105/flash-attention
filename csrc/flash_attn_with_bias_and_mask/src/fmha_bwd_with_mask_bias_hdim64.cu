@@ -23,6 +23,11 @@ bool run_fmha_bwd_with_mask_bias_hdim64(FMHA_dgrad_params &params, cudaStream_t 
             } else if (dprops->major == 7 && dprops->minor == 5) {
                 using Kernel_traits = FMHA_kernel_traits<128, 64, 16, 1, 8, 0x08u, elem_type>;
                 status = run_fmha_dgrad_fp16_sm80_loop_<Kernel_traits>(params, stream);
+            } else if (dprops->major >= 9) {
+                // H100 (sm_90) / B100 (sm_100): align with A100 strategy (V in smem, 0x100u).
+                // Hopper has 232KB shmem > A100 192KB, so 0x100u is safe and avoids register spill.
+                using Kernel_traits = FMHA_kernel_traits<256, 64, 16, 1, 8, 0x100u, elem_type>;
+                status = run_fmha_dgrad_fp16_sm80_loop_<Kernel_traits>(params, stream);
             }
         }
     }));
