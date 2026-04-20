@@ -1228,7 +1228,9 @@ bool flash_attn_fwd_with_bias_and_mask(const void *q,              // total_q x 
                                        const void *attn_mask = nullptr,
                                        const void *attn_bias = nullptr,
                                        const int64_t* mask_dims = nullptr,
-                                       const int64_t* bias_dims = nullptr) {
+                                       const int64_t* bias_dims = nullptr,
+                                       const bool is_causal = false,
+                                       const int32_t* bias_seq_offsets = nullptr) {
     return flash_attn_fwd_with_bias_and_mask_(q,
                                               k,
                                               v,
@@ -1256,7 +1258,9 @@ bool flash_attn_fwd_with_bias_and_mask(const void *q,              // total_q x 
                                               attn_mask,
                                               attn_bias,
                                               mask_dims,
-                                              bias_dims);
+                                              bias_dims,
+                                              is_causal,
+                                              bias_seq_offsets);
 }
 
 bool flash_attn_bwd_with_bias_and_mask(const void *q,              // total_q x num_heads x head_size, total_q := \sum_{i=0}^{b} s_i
@@ -1292,7 +1296,9 @@ bool flash_attn_bwd_with_bias_and_mask(const void *q,              // total_q x 
                                        const void* attn_mask = nullptr,
                                        const void* attn_bias = nullptr,
                                        const int64_t* mask_dims = nullptr,
-                                       const int64_t* bias_dims = nullptr) {
+                                       const int64_t* bias_dims = nullptr,
+                                       const bool is_causal = false,
+                                       const int32_t* bias_seq_offsets = nullptr) {
     return flash_attn_bwd_with_bias_and_mask_(q,
                                               k,
                                               v,
@@ -1326,7 +1332,9 @@ bool flash_attn_bwd_with_bias_and_mask(const void *q,              // total_q x 
                                               attn_mask,
                                               attn_bias,
                                               mask_dims,
-                                              bias_dims);
+                                              bias_dims,
+                                              is_causal,
+                                              bias_seq_offsets);
 }
 #ifdef __cplusplus
 }
