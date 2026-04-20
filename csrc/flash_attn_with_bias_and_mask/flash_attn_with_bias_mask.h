@@ -36,7 +36,9 @@ bool flash_attn_fwd_with_bias_and_mask_(
         const void *attn_mask,
         const void *attn_bias,
         const int64_t* mask_dims,
-        const int64_t* bias_dims
+        const int64_t* bias_dims,
+        const bool is_causal = false,
+        const int32_t* bias_seq_offsets = nullptr
 );
 
 bool flash_attn_bwd_with_bias_and_mask_(
@@ -73,7 +75,9 @@ bool flash_attn_bwd_with_bias_and_mask_(
         const void* attn_mask,
         const void* attn_bias,
         const int64_t* mask_dims,
-        const int64_t* bias_dims
+        const int64_t* bias_dims,
+        const bool is_causal = false,
+        const int32_t* bias_seq_offsets = nullptr
 );
 
 void flash_attn_set_error(const char *msg);

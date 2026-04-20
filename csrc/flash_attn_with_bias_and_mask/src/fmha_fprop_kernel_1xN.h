@@ -602,6 +602,10 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
             //         printf("p_sum_log=%.6f\n", p_sum_log[jj][0]);
             //     }
             // }
+            // Mark OOB Q rows with -INFINITY so backward kernel zeros them out.
+            if ((begin + blockIdx.z) * Cta_tile_p::M + rows[jj] >= binfo.actual_seqlen_q) {
+                p_sum_log[jj][0] = -INFINITY;
+            }
             if (tidx % Gmem_tile_o::THREADS_PER_ROW == 0) {
                 gmem_softmax_lse.store_row(
                     reinterpret_cast<uint32_t(&)[Mma_tile_p::MMAS_M]>(p_sum_log[jj]), rows[jj]);
@@ -1044,6 +1048,10 @@ inline __device__ void device_1xN_with_mask_bias(const Params &params,
         for (int jj = 0; jj < Gmem_tile_o::STGS_PER_LOOP; jj++) {
             float sum = p_sum_o[jj][0];
             p_sum_log[jj][0] = (sum == 0.f || sum != sum) ? -INFINITY : p_max_o[jj][0] + __logf(sum);
+            // Mark OOB Q rows with -INFINITY so backward kernel zeros them out.
+            if ((begin + l) * Cta_tile_p::M + rows[jj] >= binfo.actual_seqlen_q) {
+                p_sum_log[jj][0] = -INFINITY;
+            }
             if ((tidx % Gmem_tile_o::THREADS_PER_ROW == 0) && o_rows_are_valid) {
                 gmem_softmax_lse.store_row(
                     reinterpret_cast<uint32_t(&)[Mma_tile_p::MMAS_M]>(p_sum_log[jj]), rows[jj]);
