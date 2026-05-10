@@ -41,9 +41,12 @@ inline __device__ float apply_exp_(float x, float max) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 inline __device__ float apply_exp2_(float x, float max) {
-    return exp2f(x - max);
-    // With fast-math, this produces the same PTX instruction as the assembly below
-    // float diff = x - max;
+    float diff = x - max;
+    // When both x and max are -INF (fully-masked row in attention),
+    // IEEE 754 gives -INF - (-INF) = NaN. The correct attention weight
+    // for a fully-masked row is 0, so we return 0 instead of propagating NaN.
+    return __isnanf(diff) ? 0.f : exp2f(diff);
+    // With fast-math, exp2f produces the same PTX instruction as the assembly below
     // float res;
     // asm ("ex2.approx.ftz.f32 %0, %1;\n\t" : "=f"(res) : "f"(diff));
     // return res;

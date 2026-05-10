@@ -11,7 +11,12 @@ bool run_fmha_fwd_with_mask_bias_hdim128(Launch_params<FMHA_fprop_params> &launc
             using Kernel_traits = FMHA_kernel_traits<128, 128, 16, 1, 4, 0x08u, elem_type>;
             status = run_fmha_fp16_sm80_loop_<Kernel_traits>(launch_params, configure);
         } else {
-            if (dprops->major == 8 && dprops->minor == 0 && !launch_params.is_dropout) {
+            if (dprops->major >= 9 && !launch_params.is_dropout) {
+                // H100 (sm_90) / B100 (sm_100): same strategy as A100 -- keep K in registers.
+                // H100 has more registers per SM, so spilling risk is even lower than A100.
+                using Kernel_traits = FMHA_kernel_traits<256, 128, 16, 1, 4, 0x18u, elem_type>;
+                status = run_fmha_fp16_sm80_loop_<Kernel_traits>(launch_params, configure);
+            } else if (dprops->major == 8 && dprops->minor == 0 && !launch_params.is_dropout) {
                 // TD [2022-06-05] Keep K in registers to reduce register spilling
                 // Gives about 6% speedup compared to using block size 128.
                 using Kernel_traits = FMHA_kernel_traits<256, 128, 16, 1, 4, 0x18u, elem_type>;

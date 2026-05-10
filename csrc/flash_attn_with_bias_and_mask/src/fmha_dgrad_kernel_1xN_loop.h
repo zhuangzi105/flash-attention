@@ -367,6 +367,11 @@ inline __device__ void compute_dq_dk_dv_1xN_one_iter(const Params &params, Prng 
 
     float dp_sum[Mma_tile_p::MMAS_M * 2];
     gmem_softmax_d.load(reinterpret_cast<uint32_t(&)[Mma_tile_p::MMAS_M * 2]>(dp_sum));
+    // Zero dp_sum for out-of-bounds rows (lse==-inf) to prevent 0.f*NaN=NaN in dK/dV.
+    #pragma unroll
+    for (int mi = 0; mi < Mma_tile_p::MMAS_M * 2; ++mi) {
+        if (p_lse[mi] == -INFINITY) { dp_sum[mi] = 0.f; }
+    }
 
     // Commit the data for V to shared memory if it has not been done already.
     if( Kernel_traits::SHARE_SMEM_FOR_K_AND_V ) {
@@ -431,6 +436,17 @@ inline __device__ void compute_dq_dk_dv_1xN_one_iter(const Params &params, Prng 
         // Scale by log-sum-exp of the softmax
         // softmax.apply_exp(p_lse);
         softmax.template scale_apply_exp</*scale_max=*/false>(p_lse, params.scale_bmm1f);
+        // Zero out rows where lse == -inf (out-of-bounds query rows in last partial block).
+        // Without this, exp(-inf - (-inf)) = NaN propagates through dK/dV.
+        #pragma unroll
+        for (int mi = 0; mi < Mma_tile_p::MMAS_M * 2; ++mi) {
+            if (p_lse[mi] == -INFINITY) {
+                #pragma unroll
+                for (int ni = 0; ni < Mma_tile_p::MMAS_N * 4; ++ni) {
+                    softmax.elt_[mi][ni] = 0.f;
+                }
+            }
+        }
         if (Is_dropout) {
             // softmax.apply_dropout(ph, params.p_dropout_in_uint);
             // softmax.template apply_dropout</*encode_dropout_in_sign_bit=*/true>(ph, params.p_dropout_in_uint);
@@ -670,6 +686,11 @@ inline __device__ void compute_dq_dk_dv_1xN_one_iter(const Params &params, Prng 
 
         if (l + 1 < steps) {
             gmem_softmax_d.load(reinterpret_cast<uint32_t(&)[Mma_tile_p::MMAS_M * 2]>(dp_sum));
+            // Zero dp_sum for out-of-bounds rows (lse==-inf) to prevent 0.f*NaN=NaN in dK/dV.
+            #pragma unroll
+            for (int mi = 0; mi < Mma_tile_p::MMAS_M * 2; ++mi) {
+                if (p_lse[mi] == -INFINITY) { dp_sum[mi] = 0.f; }
+            }
         }
 
         // Load from shared memory.
@@ -1094,6 +1115,11 @@ inline __device__ void compute_dq_dk_dv_1xN_one_iter_with_bias_mask(
     float dp_sum[Mma_tile_p::MMAS_M * 2];
     gmem_softmax_d.load(reinterpret_cast<uint32_t(&)[Mma_tile_p::MMAS_M * 2]>(dp_sum));
     gmem_softmax_d.move();
+    // Zero dp_sum for out-of-bounds rows (lse==-inf) to prevent 0.f*NaN=NaN in dK/dV.
+    #pragma unroll
+    for (int mi = 0; mi < Mma_tile_p::MMAS_M * 2; ++mi) {
+        if (p_lse[mi] == -INFINITY) { dp_sum[mi] = 0.f; }
+    }
 
     // Commit the data for V to shared memory if it has not been done already.
     if( Kernel_traits::SHARE_SMEM_FOR_K_AND_V ) {
@@ -1180,6 +1206,17 @@ inline __device__ void compute_dq_dk_dv_1xN_one_iter_with_bias_mask(
         // softmax.apply_exp(p_lse);
         // exp (x - (max+log(sum))) = exp(x - max) / sum
         softmax.template scale_apply_exp</*scale_max=*/false>(p_lse, params.scale_bmm1f);
+        // Zero out rows where lse == -inf (out-of-bounds query rows in last partial block).
+        // Without this, exp(-inf - (-inf)) = NaN propagates through dK/dV.
+        #pragma unroll
+        for (int mi = 0; mi < Mma_tile_p::MMAS_M * 2; ++mi) {
+            if (p_lse[mi] == -INFINITY) {
+                #pragma unroll
+                for (int ni = 0; ni < Mma_tile_p::MMAS_N * 4; ++ni) {
+                    softmax.elt_[mi][ni] = 0.f;
+                }
+            }
+        }
 
         if (Is_dropout) {
             // softmax.apply_dropout(ph, params.p_dropout_in_uint);
@@ -1420,6 +1457,11 @@ inline __device__ void compute_dq_dk_dv_1xN_one_iter_with_bias_mask(
         if (l < steps - 1) {
             gmem_softmax_d.load(reinterpret_cast<uint32_t(&)[Mma_tile_p::MMAS_M * 2]>(dp_sum));
             gmem_softmax_d.move();
+            // Zero dp_sum for out-of-bounds rows (lse==-inf) to prevent 0.f*NaN=NaN in dK/dV.
+            #pragma unroll
+            for (int mi = 0; mi < Mma_tile_p::MMAS_M * 2; ++mi) {
+                if (p_lse[mi] == -INFINITY) { dp_sum[mi] = 0.f; }
+            }
         }
 
         // Load from shared memory.

@@ -28,6 +28,7 @@
 
 #include "flash_attn_with_bias_mask.h"
 #include "fmha.h"
+#include "sm90/fmha_sm90_interface.h"
 #include "utils.h"
 #include "cuda_utils.h"
 #include <cmath>
@@ -89,8 +90,10 @@ void set_params_fprop_with_bias_mask(FMHA_fprop_params &params,
                                      void *attn_mask = nullptr,
                                      void *attn_bias = nullptr,
                                      int bias_mod_size = 0,
+                                     int bias_row_stride = 0,
                                      int mask_head_mod_size = 0,
-                                     int mask_seq_mod_size = 0) {
+                                     int mask_seq_mod_size = 0,
+                                     int mask_row_stride = 0) {
     Data_type data_type = is_bf16 ? DATA_TYPE_BF16 : DATA_TYPE_FP16;
 
     // Reset the parameters
@@ -136,8 +139,10 @@ void set_params_fprop_with_bias_mask(FMHA_fprop_params &params,
     params.attn_mask_ptr = attn_mask;
     params.attn_bias_ptr = attn_bias;
     params.bias_mod_size = bias_mod_size;
+    params.bias_row_stride = bias_row_stride;
     params.mask_head_mod_size = mask_head_mod_size;
     params.mask_seq_mod_size = mask_seq_mod_size;
+    params.mask_row_stride = mask_row_stride;
 
     // Set the different scale values.
     // const float scale_bmm1 = 1.f / sqrtf(d);
@@ -189,8 +194,10 @@ void set_params_dgrad_with_bias_mask(FMHA_dgrad_params &params,
                                      void *attn_bias = nullptr,
                                      void *attn_ds = nullptr,
                                      int bias_mod_size = 0,
+                                     int bias_row_stride = 0,
                                      int mask_head_mod_size = 0,
-                                     int mask_seq_mod_size = 0) {
+                                     int mask_seq_mod_size = 0,
+                                     int mask_row_stride = 0) {
     set_params_fprop_with_bias_mask(params,
                                     b, 
                                     seqlen_q,
@@ -214,8 +221,10 @@ void set_params_dgrad_with_bias_mask(FMHA_dgrad_params &params,
                                     attn_mask,
                                     attn_bias,
                                     bias_mod_size,
+                                    bias_row_stride,
                                     mask_head_mod_size,
-                                    mask_seq_mod_size);
+                                    mask_seq_mod_size,
+                                    mask_row_stride);
 
     // Set the pointers and strides.
     params.dq_ptr = dq;
@@ -235,8 +244,52 @@ void set_params_dgrad_with_bias_mask(FMHA_dgrad_params &params,
 }
 
 bool run_fwd_with_bias_mask(Launch_params<FMHA_fprop_params> &launch_params,
-                            const bool configure) {
+                            const bool configure,
+                            void* workspace_ptr = nullptr) {
     bool status = true;
+    // SM90 dispatch: arch >= 9 && bias_layout == 2 && hdim == 128 && !configure
+    if (launch_params.params.arch >= 9
+        && launch_params.params.bias_layout == 2
+        && launch_params.params.d == 128
+        && !configure) {
+        auto &p = launch_params.params;
+        SM90_fwd_params sm90p{};
+        sm90p.q_ptr = p.q_ptr;
+        sm90p.k_ptr = p.k_ptr;
+        sm90p.v_ptr = p.v_ptr;
+        sm90p.o_ptr = p.o_ptr;
+        sm90p.softmax_lse_ptr = p.softmax_lse_ptr;
+        sm90p.q_row_stride = p.q_row_stride_in_elts;
+        sm90p.k_row_stride = p.k_row_stride_in_elts;
+        sm90p.v_row_stride = p.v_row_stride_in_elts;
+        sm90p.o_row_stride = p.o_row_stride_in_elts;
+        sm90p.q_head_stride = p.q_head_stride_in_elts;
+        sm90p.k_head_stride = p.k_head_stride_in_elts;
+        sm90p.v_head_stride = p.v_head_stride_in_elts;
+        sm90p.o_head_stride = p.o_head_stride_in_elts;
+        sm90p.cu_seqlens_q = p.cu_seqlens_q;
+        sm90p.cu_seqlens_k = p.cu_seqlens_k;
+        sm90p.b = p.b;
+        sm90p.seqlen_q = p.seqlen_q;
+        sm90p.seqlen_k = p.seqlen_k;
+        sm90p.d = p.d;
+        sm90p.h = p.h;
+        sm90p.total_q = p.total_q;
+        sm90p.total_k = p.total_k;
+        sm90p.scale = p.scale_bmm1f;
+        sm90p.is_bf16 = p.is_bf16;
+        sm90p.is_causal = p.is_causal;
+        sm90p.attn_bias_ptr = p.attn_bias_ptr;
+        sm90p.attn_mask_ptr = p.attn_mask_ptr;
+        sm90p.bias_seq_offsets = p.bias_seq_offsets;
+        sm90p.mask_head_mod_size = p.mask_head_mod_size;
+        sm90p.mask_seq_mod_size = p.mask_seq_mod_size;
+        sm90p.mask_row_stride = p.mask_row_stride;
+        sm90p.num_sm = p.num_sm;
+        status = run_fmha_fwd_with_mask_bias_sm90(sm90p, launch_params.stream, workspace_ptr);
+        if (status) return true;
+        // SM90 kernel returned false (stub/unsupported), fall through to SM80
+    }
     if (launch_params.params.d == 32) {
         status = run_fmha_fwd_with_mask_bias_hdim32(launch_params, configure);
     } else if (launch_params.params.d == 64) {
@@ -248,8 +301,78 @@ bool run_fwd_with_bias_mask(Launch_params<FMHA_fprop_params> &launch_params,
 }
 
 bool run_bwd_with_bias_mask(FMHA_dgrad_params &params,
-                            cudaStream_t stream) {
+                            cudaStream_t stream,
+                            void* workspace_ptr = nullptr) {
     bool status = true;
+    // SM90 dispatch: arch >= 9 && bias_layout == 2 && hdim == 128
+    if (params.arch >= 9
+        && params.bias_layout == 2
+        && params.d == 128
+        && workspace_ptr != nullptr) {
+        SM90_fwd_params sm90p{};
+        auto &p = params;
+        // Forward-shared fields
+        sm90p.q_ptr = p.q_ptr;
+        sm90p.k_ptr = p.k_ptr;
+        sm90p.v_ptr = p.v_ptr;
+        sm90p.o_ptr = p.o_ptr;
+        sm90p.softmax_lse_ptr = p.softmax_lse_ptr;
+        sm90p.q_row_stride = p.q_row_stride_in_elts;
+        sm90p.k_row_stride = p.k_row_stride_in_elts;
+        sm90p.v_row_stride = p.v_row_stride_in_elts;
+        sm90p.o_row_stride = p.o_row_stride_in_elts;
+        sm90p.q_head_stride = p.q_head_stride_in_elts;
+        sm90p.k_head_stride = p.k_head_stride_in_elts;
+        sm90p.v_head_stride = p.v_head_stride_in_elts;
+        sm90p.o_head_stride = p.o_head_stride_in_elts;
+        sm90p.cu_seqlens_q = p.cu_seqlens_q;
+        sm90p.cu_seqlens_k = p.cu_seqlens_k;
+        sm90p.b = p.b;
+        sm90p.seqlen_q = p.seqlen_q;
+        sm90p.seqlen_k = p.seqlen_k;
+        sm90p.d = p.d;
+        sm90p.h = p.h;
+        sm90p.total_q = p.total_q;
+        sm90p.total_k = p.total_k;
+        sm90p.scale = p.scale_bmm1f;
+        sm90p.is_bf16 = p.is_bf16;
+        sm90p.is_causal = p.is_causal;
+        sm90p.attn_bias_ptr = p.attn_bias_ptr;
+        sm90p.attn_mask_ptr = p.attn_mask_ptr;
+        sm90p.bias_seq_offsets = p.bias_seq_offsets;
+        sm90p.mask_head_mod_size = p.mask_head_mod_size;
+        sm90p.mask_seq_mod_size = p.mask_seq_mod_size;
+        sm90p.mask_row_stride = p.mask_row_stride;
+        sm90p.num_sm = p.num_sm;
+        // Backward-specific fields
+        sm90p.do_ptr = p.do_ptr;
+        sm90p.dq_ptr = p.dq_ptr;
+        sm90p.dk_ptr = p.dk_ptr;
+        sm90p.dv_ptr = p.dv_ptr;
+        sm90p.do_row_stride = p.dq_row_stride_in_elts;  // dO has same layout as dQ
+        sm90p.dq_row_stride = p.dq_row_stride_in_elts;
+        sm90p.dk_row_stride = p.dk_row_stride_in_elts;
+        sm90p.dv_row_stride = p.dv_row_stride_in_elts;
+        sm90p.do_head_stride = p.dq_head_stride_in_elts;
+        sm90p.dq_head_stride = p.dq_head_stride_in_elts;
+        sm90p.dk_head_stride = p.dk_head_stride_in_elts;
+        sm90p.dv_head_stride = p.dv_head_stride_in_elts;
+        sm90p.dsoftmax_sum = p.dsoftmax_sum;
+        sm90p.attn_ds_ptr = p.attn_ds_ptr;
+        sm90p.d_rounded = p.d;
+        sm90p.dv_rounded = p.d;
+        sm90p.seqlen_q_rounded = p.seqlen_q;
+        sm90p.seqlen_k_rounded = p.seqlen_k;
+        sm90p.dq_accum_ptr = nullptr;
+        sm90p.dk_accum_ptr = nullptr;
+        sm90p.dv_accum_ptr = nullptr;
+        sm90p.dq_semaphore = nullptr;
+        sm90p.dk_semaphore = nullptr;
+        sm90p.dv_semaphore = nullptr;
+        status = run_fmha_bwd_with_mask_bias_sm90(sm90p, stream, workspace_ptr);
+        if (status) return true;
+        // SM90 kernel returned false, fall through to SM80
+    }
     if (params.d == 32) {
         status = run_fmha_bwd_with_mask_bias_hdim32(params, stream);
     } else if (params.d == 64) {
@@ -294,16 +417,18 @@ bool flash_attn_fwd_with_bias_and_mask_(
         const void *attn_mask = nullptr,
         const void *attn_bias = nullptr,
         const int64_t* mask_dims = nullptr,
-        const int64_t* bias_dims = nullptr) {
-    // printf("forward seed %jd offset %jd\b", seed, offset);
+        const int64_t* bias_dims = nullptr,
+        const bool is_causal,
+        const int32_t* bias_seq_offsets) {
     FLASHATTNLIB_BEGIN_FUNC
 
     auto dprops = GetDeviceProperties(-1);
     bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
+    bool is_sm90_or_larger = dprops->major >= 9;
 
-    FLASH_ATTN_ASSERT_CHECK(is_sm8x || is_sm75);
+    FLASH_ATTN_ASSERT_CHECK(is_sm8x || is_sm75 || is_sm90_or_larger);
     FLASH_ATTN_ASSERT_CHECK(batch_size > 0);
     FLASH_ATTN_ASSERT_CHECK((head_size % 8 == 0) && (head_size <= 128));
 
@@ -315,27 +440,33 @@ bool flash_attn_fwd_with_bias_and_mask_(
     } else if( max_seqlen_k_ <= 256 ) {
         max_seqlen_k = 256;
     }
-    int max_seqlen_q = ((max_seqlen_q_ + 16 - 1) / 16) * 16;
+    int max_seqlen_q = ((max_seqlen_q_ + 128 - 1) / 128) * 128;  // round-128 to match Paddle's lse buffer allocation stride
     bool loop = max_seqlen_k > blocksize_c;
 
     void* o_tmp_ptr = workspace_ptr;
     // nullptr out to calculate workspace size
     if (out == nullptr) {
-        if (loop) {
-            *workspace_size = uint64_t(total_q) * num_heads * head_size * sizeof(float);
-        } else {
-            *workspace_size = 0;
+        uint64_t ws = loop ? uint64_t(total_q) * num_heads * head_size * sizeof(float) : 0;
+        // SM90 path needs workspace for temporary LSE buffer (FA3 varlen LSE layout)
+        if (dprops->major >= 9 && head_size == 128) {
+            uint64_t lse_tmp_size = uint64_t(num_heads) * uint64_t(total_q) * sizeof(float);
+            ws = std::max(ws, lse_tmp_size);
         }
+        *workspace_size = ws;
         return true;
     }
 
     int bias_mod_size = attn_bias ? bias_dims[0] : 0;
+    int bias_row_stride = attn_bias ? (int)bias_dims[3] : 0;
+    // Detect row-packed 3-D layout: bias_dims[2]==1 signals [total_S, H, msl]
+    int bias_layout = (attn_bias && bias_dims[2] == 1) ? 1 : 0;
     if (attn_bias) {
         FLASH_ATTN_ASSERT_CHECK(bias_dims[1] == num_heads);
     }
 
     int mask_head_mod_size = attn_mask ? mask_dims[1] : 0;
     int mask_seq_mod_size  = attn_mask ? mask_dims[2] : 0;
+    int mask_row_stride    = attn_mask ? (int)mask_dims[3] : 0;
     if (attn_mask) {
         FLASH_ATTN_ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
         FLASH_ATTN_ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q_);
@@ -372,20 +503,35 @@ bool flash_attn_fwd_with_bias_and_mask_(
                                     softmax_lse_ptr,
                                     p_dropout,
                                     softmax_scale,
-                                    false, // is_causal
+                                    is_causal,
                                     is_bf16,
                                     num_splits,
                                     const_cast<void*>(attn_mask),
                                     const_cast<void*>(attn_bias),
                                     bias_mod_size,
+                                    bias_row_stride,
                                     mask_head_mod_size,
-                                    mask_seq_mod_size);
+                                    mask_seq_mod_size,
+                                    mask_row_stride);
+    launch_params.params.bias_layout = bias_layout;
+    // Compact varlen layout: override bias_layout and set seq_offsets
+    launch_params.params.bias_seq_offsets = nullptr;
+    if (bias_seq_offsets != nullptr) {
+        launch_params.params.bias_layout = 2;
+        launch_params.params.bias_seq_offsets = const_cast<int32_t*>(bias_seq_offsets);
+    }
+    // SM90 arch dispatch fields
+    launch_params.params.arch = dprops->major;
+    launch_params.params.num_sm = dprops->multiProcessorCount;
+    // Total token counts for SM90 varlen kernel
+    launch_params.params.total_q = total_q;
+    launch_params.params.total_k = total_k;
     run_fwd_with_bias_mask(launch_params, /*configure=*/ true);
 
     if (is_dropout) {
         launch_params.params.philox_args = PhiloxCudaState(seed, offset);
     }
-    bool status = run_fwd_with_bias_mask(launch_params, /*configure=*/false);
+    bool status = run_fwd_with_bias_mask(launch_params, /*configure=*/false, workspace_ptr);
     return status;
     FLASHATTNLIB_END_FUNC 
 }
@@ -425,21 +571,24 @@ bool flash_attn_bwd_with_bias_and_mask_(
         const void* attn_mask = nullptr,
         const void* attn_bias = nullptr,
         const int64_t* mask_dims = nullptr,
-        const int64_t* bias_dims = nullptr) {
+        const int64_t* bias_dims = nullptr,
+        const bool is_causal,
+        const int32_t* bias_seq_offsets) {
     // printf("backward seed %jd offset %jd\b", seed, offset);
     FLASHATTNLIB_BEGIN_FUNC
     auto dprops = GetDeviceProperties(-1);
     bool is_sm75 = dprops->major == 7 && dprops->minor == 5;
     bool is_sm80 = dprops->major == 8 && dprops->minor == 0;
     bool is_sm8x = dprops->major == 8 && dprops->minor >= 0;
-    FLASH_ATTN_ASSERT_CHECK(is_sm8x || is_sm75);
+    bool is_sm90_or_larger = dprops->major >= 9;
+    FLASH_ATTN_ASSERT_CHECK(is_sm8x || is_sm75 || is_sm90_or_larger);
 
     bool is_dropout = p_dropout > 0.0;
 
     FLASH_ATTN_ASSERT_CHECK(batch_size > 0);
     FLASH_ATTN_ASSERT_CHECK((head_size % 8 == 0) && (head_size <= 128));
     if (head_size > 64) {  // TODO: eventually we should support SM86 and SM70 with d=128 as well
-        FLASH_ATTN_ASSERT_CHECK(is_sm80);
+        FLASH_ATTN_ASSERT_CHECK(is_sm80 || is_sm90_or_larger);
     }
 
     int blocksize_c = (head_size > 64 || (is_sm75 && head_size > 32)) ? 128 : 256;
@@ -449,7 +598,7 @@ bool flash_attn_bwd_with_bias_and_mask_(
     } else if( max_seqlen_k_ <= 256 ) {
         max_seqlen_k = 256;
     }
-    int max_seqlen_q = ((max_seqlen_q_ + 16 - 1) / 16) * 16;
+    int max_seqlen_q = ((max_seqlen_q_ + 128 - 1) / 128) * 128;  // round-128 to match Paddle's lse buffer allocation stride
     bool loop = max_seqlen_k > blocksize_c;
 
     void *dq_tmp_ptr = workspace_ptr;
@@ -464,23 +613,50 @@ bool flash_attn_bwd_with_bias_and_mask_(
         } else {
             *workspace_size = uint64_t(total_q) * num_heads * head_size * sizeof(float);
         }
+        // SM90 backward needs workspace for dQaccum (fp32) + LSE_log2 + dPsum + raw_LSE_temp
+        if (dprops->major >= 9 && head_size == 128) {
+            // Padded sizes matching SeqlenInfo formula:
+            // offset_q_padded = (cu_seqlens_q[bidb] + bidb * kBlockM) / kBlockM * kBlockM
+            // Upper bound: round_up(total_q + batch * kBlockM_max, kBlockM_max)
+            int const kBlockM_max = 80;  // max of causal (64) and non-causal (80)
+            uint64_t total_q_padded = uint64_t((total_q + batch_size * kBlockM_max + kBlockM_max - 1) / kBlockM_max) * kBlockM_max;
+            int d_rounded = ((head_size + 31) / 32) * 32;
+            uint64_t dqaccum_size = total_q_padded * num_heads * d_rounded * sizeof(float);
+            // LSE_log2 + dPsum + raw_LSE_temp = 3 buffers of [h * total_q_padded] floats
+            uint64_t stats_size = 3 * uint64_t(num_heads) * total_q_padded * sizeof(float);
+            uint64_t sem_size = 4096 * sizeof(int);  // generous semaphore space
+            *workspace_size = std::max(*workspace_size, dqaccum_size + stats_size + sem_size);
+        }
         return true;
     }
 
     int bias_mod_size = 0;
+    int bias_row_stride = 0;
+    int bias_layout = 0;
     if (attn_bias) {
         // check attn_bias shape
         bias_mod_size = bias_dims[0];
-        SetZero(dbias_ptr, 2, {batch_size, num_heads, max_seqlen_q_, max_seqlen_k_}, stream);
+        bias_row_stride = (int)bias_dims[3];
+        bias_layout = (bias_dims[2] == 1) ? 1 : 0;
+        if (bias_seq_offsets != nullptr) {
+            bias_layout = 2;  // compact varlen; dbias zeroed by Paddle layer
+        } else if (bias_layout == 1) {
+            // Row-packed 3-D: dbias shape = [bias_dims[0], num_heads, 1, bias_row_stride]
+            SetZero(dbias_ptr, 2, {(int)bias_dims[0], num_heads, 1, bias_row_stride}, stream);
+        } else {
+            SetZero(dbias_ptr, 2, {batch_size, num_heads, max_seqlen_q_, max_seqlen_k_}, stream);
+        }
         FLASH_ATTN_ASSERT_CHECK(bias_dims[1] == num_heads);
     }
 
     int mask_head_mod_size = 0;
     int mask_seq_mod_size = 0;
+    int mask_row_stride = 0;
     if (attn_mask) {
         // last two dimension
         mask_head_mod_size = mask_dims[1];
         mask_seq_mod_size = mask_dims[2];
+        mask_row_stride = (int)mask_dims[3];
         FLASH_ATTN_ASSERT_CHECK(mask_dims[1] == 1 || mask_dims[1] == num_heads);
         FLASH_ATTN_ASSERT_CHECK(mask_dims[2] == 1 || mask_dims[2] == max_seqlen_q_);
     }
@@ -519,20 +695,35 @@ bool flash_attn_bwd_with_bias_and_mask_(
                                     dsoftmax_ptr,
                                     p_dropout,
                                     softmax_scale,
-                                    false, // is_causal
+                                    is_causal,
                                     is_bf16,
                                     num_splits,
                                     attn_mask ? const_cast<void*>(attn_mask) : nullptr,
                                     attn_bias ? const_cast<void*>(attn_bias) : nullptr,
                                     attn_bias ? dbias_ptr : nullptr,
                                     bias_mod_size,
+                                    bias_row_stride,
                                     mask_head_mod_size,
-                                    mask_seq_mod_size);
+                                    mask_seq_mod_size,
+                                    mask_row_stride);
+    params.bias_layout = bias_layout;
+    // Compact varlen layout: set seq_offsets
+    params.bias_seq_offsets = nullptr;
+    if (bias_seq_offsets != nullptr) {
+        params.bias_layout = 2;
+        params.bias_seq_offsets = const_cast<int32_t*>(bias_seq_offsets);
+    }
+    // SM90 arch dispatch fields
+    params.arch = dprops->major;
+    params.num_sm = dprops->multiProcessorCount;
+    // Total token counts for SM90 varlen kernel
+    params.total_q = total_q;
+    params.total_k = total_k;
 
     if(is_dropout) {
         params.philox_args = PhiloxCudaState(seed, offset);
     }
-    bool status = run_bwd_with_bias_mask(params, stream);
+    bool status = run_bwd_with_bias_mask(params, stream, workspace_ptr);
     return status;
     FLASHATTNLIB_END_FUNC 
 }

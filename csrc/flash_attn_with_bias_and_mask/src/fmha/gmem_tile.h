@@ -543,8 +543,12 @@ struct Gmem_tile_mma_mask {
         , loop_step_idx(loop_step_idx)
         , mask_seq_mod_size(params.mask_seq_mod_size)
     {
-        row_stride_in_bytes = binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
-        
+        // Use params.mask_row_stride (= mask_dims[3] = msl) instead of
+        // binfo.actual_seqlen_k (= T_i, variable per sequence).
+        // With non-uniform sequences T_i < msl, the old code computed wrong
+        // row offsets for every sequence except the longest one.
+        row_stride_in_bytes = params.mask_row_stride * BYTES_PER_ELEMENT;
+
         const int warp = tidx_ / Cta_tile::THREADS_PER_WARP;
         const int lane = tidx_ % Cta_tile::THREADS_PER_WARP;
         
@@ -569,13 +573,9 @@ struct Gmem_tile_mma_mask {
         // uint32_t bidx = binfo.bidb * params.h + binfo.bidh;
         uint32_t bidx = binfo.bidb * params.mask_head_mod_size + (binfo.bidh % params.mask_head_mod_size);
 
-        // the index of bs and head dim
-        // uint32_t row_offset = bidx * binfo.actual_seqlen_q * binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
-        // row_offset += (uint32_t)(row * binfo.actual_seqlen_k * BYTES_PER_ELEMENT);
-
-        // to support the mask last two dimension 
-        uint32_t row_offset = bidx * params.mask_seq_mod_size * binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
-        row_offset += (uint32_t)( (row % params.mask_seq_mod_size) * binfo.actual_seqlen_k * BYTES_PER_ELEMENT); 
+        // the index of bs and head dim — use mask_row_stride (msl) not actual_seqlen_k (T_i)
+        uint32_t row_offset = bidx * params.mask_seq_mod_size * params.mask_row_stride * BYTES_PER_ELEMENT;
+        row_offset += (uint32_t)((row % params.mask_seq_mod_size) * params.mask_row_stride * BYTES_PER_ELEMENT);
 
         ptr_ += row_offset;
     }
@@ -720,7 +720,14 @@ struct Gmem_tile_mma_bias {
         , tidx_(tidx)
         , loop_step_idx(loop_step_idx)
     {
-        row_stride_in_bytes = binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
+        row_stride_in_bytes = params.bias_row_stride * BYTES_PER_ELEMENT;
+        // For row-packed 3-D layout [total_S, H, msl], row stride = H * msl
+        if (params.bias_layout == 1) {
+            row_stride_in_bytes = params.h * params.bias_row_stride * BYTES_PER_ELEMENT;
+        } else if (params.bias_layout == 2) {
+            // Compact varlen: row stride = T_i (sequence-local, no padding)
+            row_stride_in_bytes = (uint32_t)binfo.actual_seqlen_q * BYTES_PER_ELEMENT;
+        }
         
         const int warp = tidx_ / Cta_tile::THREADS_PER_WARP;
         const int lane = tidx_ % Cta_tile::THREADS_PER_WARP;
@@ -740,19 +747,27 @@ struct Gmem_tile_mma_bias {
         col = warp_n * Mma_tile::N_PER_MMA + tid;
         static_assert(Mma_tile::N_PER_MMA == 16);
 
-        // The distance between two blocks (in bytes).
-        // TODO: bias is [bs, head, seq_q, seq_k]
-        // The block index.
-        //  uint32_t bidx = binfo.bidb * params.h + binfo.bidh;
-        uint32_t bidx = ( binfo.bidb % params.bias_mod_size ) * params.h + binfo.bidh;
-
-        // the index of bs and head dim
-        uint32_t row_offset = bidx * binfo.actual_seqlen_q * binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
-        // row_offset = (uint32_t)(row * row_stride_in_bytes);
-        row_offset += (uint32_t)(row * binfo.actual_seqlen_k * BYTES_PER_ELEMENT);   
-
-        // do we need to move col first if seklen_k > cols
-        ptr_ += row_offset;
+        if (params.bias_layout == 1) {
+            // Row-packed 3-D: bias[total_S, H, msl]
+            uint32_t abs_row = binfo.sum_s_q + row;
+            uint32_t row_offset = (abs_row * (uint32_t)params.h + binfo.bidh)
+                                * (uint32_t)params.bias_row_stride * BYTES_PER_ELEMENT;
+            ptr_ += row_offset;
+        } else if (params.bias_layout == 2) {
+            // Compact varlen: bias[seq_offsets[seq_i] + h*T_i² + local_q*T_i]
+            uint32_t T_i     = (uint32_t)binfo.actual_seqlen_q;
+            uint32_t local_q = (uint32_t)row;
+            uint32_t seq_off = (uint32_t)params.bias_seq_offsets[binfo.bidb];
+            uint32_t row_off = (seq_off + (uint32_t)binfo.bidh * T_i * T_i
+                               + local_q * T_i) * BYTES_PER_ELEMENT;
+            ptr_ += row_off;
+        } else {
+            // Legacy 4-D: bias[num_seqs, H, msl, msl]
+            uint32_t bidx = ( binfo.bidb % params.bias_mod_size ) * params.h + binfo.bidh;
+            uint32_t row_offset = bidx * (uint32_t)params.bias_row_stride * (uint32_t)params.bias_row_stride * BYTES_PER_ELEMENT;
+            row_offset += (uint32_t)(row * params.bias_row_stride * BYTES_PER_ELEMENT);   
+            ptr_ += row_offset;
+        }
     }
 
     // Load from global memory to Fragment.
@@ -889,11 +904,21 @@ struct Gmem_tile_mma_ds {
         , tidx_(tidx)
         , loop_step_idx(loop_step_idx)
     {
-        row_stride_in_bytes = binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
-
+        // Use params.bias_row_stride (= bias_dims[3] = msl) instead of
+        // binfo.actual_seqlen_k (= T_i).  d_nonbatched_bias layout matches
+        // nonbatched_bias: [num_seqs, H, msl, msl], row stride = msl.
+        row_stride_in_bytes = params.bias_row_stride * BYTES_PER_ELEMENT;
+        // For row-packed 3-D layout [total_S, H, msl], row stride = H * msl
+        if (params.bias_layout == 1) {
+            row_stride_in_bytes = params.h * params.bias_row_stride * BYTES_PER_ELEMENT;
+        } else if (params.bias_layout == 2) {
+            // Compact varlen: row stride = T_i (sequence-local)
+            row_stride_in_bytes = (uint32_t)binfo.actual_seqlen_q * BYTES_PER_ELEMENT;
+        }
+        
         const int warp = tidx_ / Cta_tile::THREADS_PER_WARP;
         const int lane = tidx_ % Cta_tile::THREADS_PER_WARP;
-
+        
         // find the warp in the Cta tile
         const int warp_n = (warp / Cta_tile::WARPS_M);
         const int warp_m = (warp % Cta_tile::WARPS_M);
@@ -910,19 +935,26 @@ struct Gmem_tile_mma_ds {
         col = warp_n * Mma_tile::N_PER_MMA + tid;
         static_assert(Mma_tile::N_PER_MMA == 16,
                 "only support sm80 m16n8k16 tensor core");
-
-        // The distance between two blocks (in bytes).
-        // TODO: mask is [bs, head, seq_q, seq_k]
-        // The block index.
-        uint32_t bidx = binfo.bidb * params.h + binfo.bidh;
-
-        // the index of bs and head dim
-        uint32_t row_offset = bidx * binfo.actual_seqlen_q * binfo.actual_seqlen_k * BYTES_PER_ELEMENT;
-        // row_offset = (uint32_t)(row * row_stride_in_bytes);
-
-        row_offset += (uint32_t)(row * binfo.actual_seqlen_k * BYTES_PER_ELEMENT);
-        // do we need to move col first if seklen_k > cols
-        ptr_ += row_offset;
+        if (params.bias_layout == 1) {
+            // Row-packed 3-D: dbias[total_S, H, msl]
+            uint32_t abs_row = binfo.sum_s_q + row;
+            uint32_t row_offset = (abs_row * (uint32_t)params.h + binfo.bidh)
+                                * (uint32_t)params.bias_row_stride * BYTES_PER_ELEMENT;
+            ptr_ += row_offset;
+        } else if (params.bias_layout == 2) {
+            // Compact varlen: dbias[seq_offsets[seq_i] + h*T_i² + local_q*T_i]
+            uint32_t T_i     = (uint32_t)binfo.actual_seqlen_q;
+            uint32_t local_q = (uint32_t)row;
+            uint32_t seq_off = (uint32_t)params.bias_seq_offsets[binfo.bidb];
+            uint32_t row_off = (seq_off + (uint32_t)binfo.bidh * T_i * T_i
+                               + local_q * T_i) * BYTES_PER_ELEMENT;
+            ptr_ += row_off;
+        } else {
+            uint32_t bidx = binfo.bidb * params.h + binfo.bidh;
+            uint32_t row_offset = bidx * (uint32_t)params.bias_row_stride * (uint32_t)params.bias_row_stride * BYTES_PER_ELEMENT;
+            row_offset += (uint32_t)(row * params.bias_row_stride * BYTES_PER_ELEMENT);
+            ptr_ += row_offset;
+        }
     }
 
     // Store to global memory.

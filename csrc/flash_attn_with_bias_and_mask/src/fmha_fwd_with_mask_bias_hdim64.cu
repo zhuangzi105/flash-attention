@@ -22,6 +22,10 @@ bool run_fmha_fwd_with_mask_bias_hdim64(Launch_params<FMHA_fprop_params> &launch
                     using Kernel_traits = FMHA_kernel_traits<256, 64, 16, 1, 4, 0x08u, elem_type>;
                     status = run_fmha_fp16_sm80_loop_<Kernel_traits>(launch_params, configure);
                 }
+            } else if (dprops->major >= 9) {
+                // H100 (sm_90) / B100 (sm_100): same tile as SM86/89, shmem 232KB is sufficient
+                using Kernel_traits = FMHA_kernel_traits<256, 64, 16, 1, 4, 0x08u, elem_type>;
+                status = run_fmha_fp16_sm80_loop_<Kernel_traits>(launch_params, configure);
             }
         }
     }));
