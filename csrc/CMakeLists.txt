@@ -186,7 +186,12 @@ target_compile_options(flashattn_with_bias_mask PRIVATE $<$<COMPILE_LANGUAGE:CUD
   >)
 
 # SM90 target: compile with sm_90a native gencode (required for WGMMA/TMA instructions)
-set(FA_SM90_GENCODE_OPTION "SHELL: -gencode arch=compute_90a,code=sm_90a")
+# Also add sm_100a for B200 (Blackwell SM100). SM100 supports WGMMA/TMA (forward compatible
+# with SM90 ISA), so the same FA3 Hopper kernels run correctly on B200 with sm_100a CUBIN.
+# Without sm_100a, B200 hits cudaErrorNoKernelImageForDevice because sm_90a CUBIN is
+# SM90-specific and cannot execute on SM100.
+set(FA_SM90_GENCODE_OPTION "SHELL: -gencode arch=compute_90a,code=sm_90a \
+  -gencode arch=compute_100a,code=sm_100a")
 target_compile_options(flashattn_with_bias_mask_sm90 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
   -w
   -Xcompiler="-fPIC"

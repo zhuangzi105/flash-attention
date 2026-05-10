@@ -879,6 +879,13 @@ struct CollectiveMainloopBwdSm90 {
             if (params.ptr_bias != nullptr) {
                 static constexpr int kBlockM_b = get<0>(TileShape_MNK{});
                 static constexpr int kBlockN_b = get<1>(TileShape_MNK{});
+                // Follow FA3 mask.h convention: Row/Col indices depend on SdP_swapAB.
+                // When SdP_swapAB=true, the MMA computes K^T*Q so MMA "M"=K, "N"=Q.
+                // convert_layout_acc_rowcol<Transposed=true> swaps row/col, so:
+                //   get<Row> (Row=1 when swapped) = Q-direction
+                //   get<Col> (Col=0 when swapped) = K-direction
+                static constexpr int Row = !SdP_swapAB ? 0 : 1;
+                static constexpr int Col = !SdP_swapAB ? 1 : 0;
                 Tensor cS_b = cute::make_identity_tensor(
                     select<!SdP_swapAB ? 0 : 1, !SdP_swapAB ? 1 : 0>(TileShape_MNK{}));
                 Tensor tScS_b = tiled_mma_SdP.get_thread_slice(thread_idx).partition_C(cS_b);
@@ -889,13 +896,13 @@ struct CollectiveMainloopBwdSm90 {
                     + params.bias_seq_offsets[bidb] + bidh * T_i * T_i;
                 #pragma unroll
                 for (int mi = 0; mi < size<0>(scores); ++mi) {
-                    int const row = get<0>(tScS_b_rc(mi, _0{})) + m_block * kBlockM_b;
-                    if (row < T_i) {
+                    int const q_pos = get<Row>(tScS_b_rc(mi, _0{})) + m_block * kBlockM_b;
+                    if (q_pos < T_i) {
                         #pragma unroll
                         for (int ni = 0; ni < size<1>(scores); ++ni) {
-                            int const col = get<1>(tScS_b_rc(_0{}, ni)) + n_block * kBlockN_b;
-                            if (col < T_i) {
-                                scores(mi, ni) += static_cast<float>(bias_head_ptr[row * T_i + col]);
+                            int const k_pos = get<Col>(tScS_b_rc(_0{}, ni)) + n_block * kBlockN_b;
+                            if (k_pos < T_i) {
+                                scores(mi, ni) += static_cast<float>(bias_head_ptr[q_pos * T_i + k_pos]);
                             }
                         }
                     }
@@ -905,6 +912,8 @@ struct CollectiveMainloopBwdSm90 {
             if (params.ptr_mask != nullptr) {
                 static constexpr int kBlockM_m = get<0>(TileShape_MNK{});
                 static constexpr int kBlockN_m = get<1>(TileShape_MNK{});
+                static constexpr int RowM = !SdP_swapAB ? 0 : 1;
+                static constexpr int ColM = !SdP_swapAB ? 1 : 0;
                 Tensor cS_m = cute::make_identity_tensor(
                     select<!SdP_swapAB ? 0 : 1, !SdP_swapAB ? 1 : 0>(TileShape_MNK{}));
                 Tensor tScS_m = tiled_mma_SdP.get_thread_slice(thread_idx).partition_C(cS_m);
@@ -917,12 +926,12 @@ struct CollectiveMainloopBwdSm90 {
                     + (bidb * mhs + (bidh % mhs)) * mss * mrs;
                 #pragma unroll
                 for (int mi = 0; mi < size<0>(scores); ++mi) {
-                    int const row = get<0>(tScS_m_rc(mi, _0{})) + m_block * kBlockM_m;
+                    int const row = get<RowM>(tScS_m_rc(mi, _0{})) + m_block * kBlockM_m;
                     if (row < seqlen_q) {
                         int const mask_row = row % mss;
                         #pragma unroll
                         for (int ni = 0; ni < size<1>(scores); ++ni) {
-                            int const col = get<1>(tScS_m_rc(_0{}, ni)) + n_block * kBlockN_m;
+                            int const col = get<ColM>(tScS_m_rc(_0{}, ni)) + n_block * kBlockN_m;
                             if (col < seqlen_k) {
                                 scores(mi, ni) += static_cast<float>(
                                     mask_base_ptr[mask_row * mrs + col]);
@@ -973,6 +982,9 @@ struct CollectiveMainloopBwdSm90 {
             if (params.ptr_dbias != nullptr) {
                 static constexpr int kBlockM_db = get<0>(TileShape_MNK{});
                 static constexpr int kBlockN_db = get<1>(TileShape_MNK{});
+                // Follow FA3 mask.h convention: Row/Col depend on SdP_swapAB
+                static constexpr int RowDB = !SdP_swapAB ? 0 : 1;
+                static constexpr int ColDB = !SdP_swapAB ? 1 : 0;
                 Tensor cS_db = cute::make_identity_tensor(
                     select<!SdP_swapAB ? 0 : 1, !SdP_swapAB ? 1 : 0>(TileShape_MNK{}));
                 Tensor tScS_db = tiled_mma_SdP.get_thread_slice(thread_idx).partition_C(cS_db);
@@ -983,13 +995,13 @@ struct CollectiveMainloopBwdSm90 {
                     + params.bias_seq_offsets[bidb] + bidh * T_i * T_i;
                 #pragma unroll
                 for (int mi = 0; mi < size<0>(dS); ++mi) {
-                    int const row = get<0>(tScS_db_rc(mi, _0{})) + m_block * kBlockM_db;
-                    if (row < T_i) {
+                    int const q_pos = get<RowDB>(tScS_db_rc(mi, _0{})) + m_block * kBlockM_db;
+                    if (q_pos < T_i) {
                         #pragma unroll
                         for (int ni = 0; ni < size<1>(dS); ++ni) {
-                            int const col = get<1>(tScS_db_rc(_0{}, ni)) + n_block * kBlockN_db;
-                            if (col < T_i) {
-                                dbias_head_ptr[row * T_i + col] = static_cast<Element>(dS(mi, ni));
+                            int const k_pos = get<ColDB>(tScS_db_rc(_0{}, ni)) + n_block * kBlockN_db;
+                            if (k_pos < T_i) {
+                                dbias_head_ptr[q_pos * T_i + k_pos] = static_cast<Element>(dS(mi, ni));
                             }
                         }
                     }
