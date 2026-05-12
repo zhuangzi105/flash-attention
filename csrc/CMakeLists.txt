@@ -186,8 +186,13 @@ target_compile_options(flashattn_with_bias_mask PRIVATE $<$<COMPILE_LANGUAGE:CUD
 # with SM90 ISA), so the same FA3 Hopper kernels run correctly on B200 with sm_100a CUBIN.
 # Without sm_100a, B200 hits cudaErrorNoKernelImageForDevice because sm_90a CUBIN is
 # SM90-specific and cannot execute on SM100.
-set(FA_SM90_GENCODE_OPTION "SHELL: -gencode arch=compute_90a,code=sm_90a \
+# compute_100a requires CUDA 12.8+; skip it on older toolchains to avoid nvcc fatal error.
+if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL "12.8")
+  set(FA_SM90_GENCODE_OPTION "SHELL: -gencode arch=compute_90a,code=sm_90a \
   -gencode arch=compute_100a,code=sm_100a")
+else()
+  set(FA_SM90_GENCODE_OPTION "SHELL: -gencode arch=compute_90a,code=sm_90a")
+endif()
 target_compile_options(flashattn_with_bias_mask_sm90 PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
   -w
   -Xcompiler="-fPIC"
