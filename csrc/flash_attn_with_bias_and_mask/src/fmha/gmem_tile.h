@@ -598,7 +598,7 @@ struct Gmem_tile_mma_mask {
                         #pragma unroll
                         for (int jj = 0; jj < 2; ++jj ) {
                             int offset = ii * 2 + jj;
-                            const int current_row = mi * ROWS + ii * 8;
+                            const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
                             ptrs[offset] = ptr_ + (uint32_t)(current_row % mask_seq_mod_size) * row_stride_in_bytes +
                                         (uint32_t)current_col * BYTES_PER_ELEMENT;
@@ -624,7 +624,7 @@ struct Gmem_tile_mma_mask {
                         #pragma unroll
                         for (int jj = 0; jj < 2; ++jj ) {
                             int offset = ii * 2 + jj;
-                            const int current_row = mi * ROWS + ii * 8;
+                            const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
                             ptrs[offset] = ptr_ + (uint32_t)(current_row % mask_seq_mod_size) * row_stride_in_bytes +
                                         (uint32_t)current_col * BYTES_PER_ELEMENT;
@@ -786,7 +786,7 @@ struct Gmem_tile_mma_bias {
                         #pragma unroll
                         for (int jj = 0; jj < 2; ++jj ) {
                             int offset = ii * 2 + jj;
-                            const int current_row = mi * ROWS + ii * 8;
+                            const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
                             ptrs[offset] = ptr_ + (uint32_t)current_row * row_stride_in_bytes +
                                         (uint32_t)current_col * BYTES_PER_ELEMENT;
@@ -813,7 +813,7 @@ struct Gmem_tile_mma_bias {
                         #pragma unroll
                         for (int jj = 0; jj < 2; ++jj ) {
                             int offset = ii * 2 + jj;
-                            const int current_row = mi * ROWS + ii * 8;
+                            const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
                             ptrs[offset] = ptr_ + (uint32_t)current_row * row_stride_in_bytes +
                                         (uint32_t)current_col * BYTES_PER_ELEMENT;
@@ -976,7 +976,7 @@ struct Gmem_tile_mma_ds {
                             float tmp01 = softmax[2 * mi + ii][4 * ni + jj * 2 + 1];
                             dst = fmha::float2_pack<elem_type>(tmp00, tmp01);
 
-                            const int current_row = mi * ROWS + ii * 8;
+                            const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
 
                             char *ptrs = ptr_ + (uint32_t)current_row * row_stride_in_bytes +
@@ -1005,7 +1005,7 @@ struct Gmem_tile_mma_ds {
                             uint16_t data1 = fmha::float_pack<elem_type>(tmp00);
                             uint16_t data2 = fmha::float_pack<elem_type>(tmp01);
 
-                            const int current_row = mi * ROWS + ii * 8;
+                            const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
 
                             char *ptrs = ptr_ + (uint32_t)current_row * row_stride_in_bytes +
