@@ -1322,7 +1322,7 @@ inline __device__ void compute_dq_dk_dv_1xN_one_iter_with_bias_mask(
         softmax.template pack<elem_type>(frag_p);
 
         if (has_attn_bias) {
-            gmem_ds.template store<elem_type>(softmax.elt_);
+            gmem_ds.template store<float>(softmax.elt_);
             gmem_ds.move();
         }
 

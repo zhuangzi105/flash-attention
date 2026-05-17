@@ -50,7 +50,7 @@ struct SM90_fwd_params {
     int64_t do_head_stride, dq_head_stride, dk_head_stride, dv_head_stride;
 
     void* dsoftmax_sum;     // softmax backward sum: dot(dO, O), [b, h, seqlen_q]
-    void* attn_ds_ptr;      // dbias output (same dtype as Element), or nullptr
+    void* attn_ds_ptr;      // dbias output (float32), or nullptr
 
     int seqlen_q_rounded;   // seqlen_q rounded up to kBlockM multiple (for dQaccum sizing)
     int seqlen_k_rounded;   // seqlen_k rounded up to kBlockN multiple

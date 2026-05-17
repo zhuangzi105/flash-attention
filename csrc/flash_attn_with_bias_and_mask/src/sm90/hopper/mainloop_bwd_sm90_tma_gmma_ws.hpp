@@ -991,7 +991,8 @@ struct CollectiveMainloopBwdSm90 {
                 Tensor tScS_db_rc = make_tensor(tScS_db.data(),
                     flash::convert_layout_acc_rowcol<SdP_swapAB>(tScS_db.layout()));
                 int const T_i = seqlen_q;
-                Element* dbias_head_ptr = reinterpret_cast<Element*>(params.ptr_dbias)
+                // PaddleBox: write d_bias as float32 (higher precision)
+                float* dbias_head_ptr = reinterpret_cast<float*>(params.ptr_dbias)
                     + params.bias_seq_offsets[bidb] + bidh * T_i * T_i;
                 #pragma unroll
                 for (int mi = 0; mi < size<0>(dS); ++mi) {
@@ -1001,7 +1002,7 @@ struct CollectiveMainloopBwdSm90 {
                         for (int ni = 0; ni < size<1>(dS); ++ni) {
                             int const k_pos = get<ColDB>(tScS_db_rc(_0{}, ni)) + n_block * kBlockN_db;
                             if (k_pos < T_i) {
-                                dbias_head_ptr[q_pos * T_i + k_pos] = static_cast<Element>(dS(mi, ni));
+                                dbias_head_ptr[q_pos * T_i + k_pos] = static_cast<float>(dS(mi, ni));
                             }
                         }
                     }

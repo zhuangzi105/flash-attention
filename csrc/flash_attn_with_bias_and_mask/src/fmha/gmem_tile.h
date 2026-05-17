@@ -974,7 +974,6 @@ struct Gmem_tile_mma_ds {
                         for (int jj = 0; jj < 2; ++jj ) {
                             float tmp00 = softmax[2 * mi + ii][4 * ni + jj * 2];
                             float tmp01 = softmax[2 * mi + ii][4 * ni + jj * 2 + 1];
-                            dst = fmha::float2_pack<elem_type>(tmp00, tmp01);
 
                             const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
@@ -985,7 +984,15 @@ struct Gmem_tile_mma_ds {
                             preds = (current_row + row < min(ROWS, actual_seqlen_q))
                                             && ((current_col + BYTES_PER_LDG / BYTES_PER_ELEMENT) <= actual_seqlen_k);
                             if (preds) {
-                                fmha::stg(ptrs, dst);
+                                if constexpr (BYTES_PER_ELEMENT == 4) {
+                                    uint2 dst2;
+                                    dst2.x = __float_as_uint(tmp00);
+                                    dst2.y = __float_as_uint(tmp01);
+                                    fmha::stg(ptrs, dst2);
+                                } else {
+                                    dst = fmha::float2_pack<elem_type>(tmp00, tmp01);
+                                    fmha::stg(ptrs, dst);
+                                }
                             }
                         }
                     }
@@ -1002,8 +1009,6 @@ struct Gmem_tile_mma_ds {
                         for (int jj = 0; jj < 2; ++jj ) {
                             float tmp00 = softmax[2 * mi + ii][4 * ni + jj * 2];
                             float tmp01 = softmax[2 * mi + ii][4 * ni + jj * 2 + 1];
-                            uint16_t data1 = fmha::float_pack<elem_type>(tmp00);
-                            uint16_t data2 = fmha::float_pack<elem_type>(tmp01);
 
                             const int current_row = mi * Mma_tile::M_PER_MMA_PER_CTA + ii * 8;
                             const int current_col = loop_step_idx * Cta_tile::N + ni * Mma_tile::N_PER_MMA_PER_CTA + jj * 8 + col;
@@ -1021,11 +1026,22 @@ struct Gmem_tile_mma_ds {
                                 }
                             }
 
-                            if (preds == 1) {
-                                fmha::stg(reinterpret_cast<uint16_t*>(ptrs), data1);
-                                fmha::stg(reinterpret_cast<uint16_t*>(ptrs) + 1, data2);
-                            }else if (preds == 2) {
-                                fmha::stg(reinterpret_cast<uint16_t*>(ptrs), data1);
+                            if constexpr (BYTES_PER_ELEMENT == 4) {
+                                if (preds == 1) {
+                                    fmha::stg(reinterpret_cast<uint32_t*>(ptrs), __float_as_uint(tmp00));
+                                    fmha::stg(reinterpret_cast<uint32_t*>(ptrs) + 1, __float_as_uint(tmp01));
+                                } else if (preds == 2) {
+                                    fmha::stg(reinterpret_cast<uint32_t*>(ptrs), __float_as_uint(tmp00));
+                                }
+                            } else {
+                                uint16_t data1 = fmha::float_pack<elem_type>(tmp00);
+                                uint16_t data2 = fmha::float_pack<elem_type>(tmp01);
+                                if (preds == 1) {
+                                    fmha::stg(reinterpret_cast<uint16_t*>(ptrs), data1);
+                                    fmha::stg(reinterpret_cast<uint16_t*>(ptrs) + 1, data2);
+                                }else if (preds == 2) {
+                                    fmha::stg(reinterpret_cast<uint16_t*>(ptrs), data1);
+                                }
                             }
                         }
                     }

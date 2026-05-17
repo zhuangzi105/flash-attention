@@ -617,9 +617,27 @@ bool flash_attn_bwd_with_bias_and_mask_(
         if (dprops->major >= 9 && head_size == 128) {
             // Padded sizes matching SeqlenInfo formula:
             // offset_q_padded = (cu_seqlens_q[bidb] + bidb * kBlockM) / kBlockM * kBlockM
-            // Upper bound: round_up(total_q + batch * kBlockM_max, kBlockM_max)
-            int const kBlockM_max = 80;  // max of causal (64) and non-causal (80)
-            uint64_t total_q_padded = uint64_t((total_q + batch_size * kBlockM_max + kBlockM_max - 1) / kBlockM_max) * kBlockM_max;
+            // The padded size depends on kBlockM: causal=64, non-causal=80.
+            // A smaller kBlockM can produce a LARGER padded value (finer rounding
+            // granularity), but a larger kBlockM can also be larger in other cases.
+            // We must take the max over both possible kBlockM values.
+            // E.g. total_q=2166, batch=1:
+            //   kBlockM=64 => ceil((2166+64+63)/64)*64 = 2304
+            //   kBlockM=80 => ceil((2166+80+79)/80)*80 = 2320  <-- LARGER
+            // But also: total_q=150, batch=1:
+            //   kBlockM=64 => ceil((150+64+63)/64)*64 = 256
+            //   kBlockM=80 => ceil((150+80+79)/80)*80 = 240
+            //   Here kBlockM=64 gives the LARGER value!
+            // The old code used kBlockM_max=80 only, which underestimated the
+            // causal path for sl=129-160, causing workspace buffer overflow and
+            // dk corruption (bug: NH=4 causal produced large integer dk values
+            // like 294, 524, 3680).
+            int const kBlockM_vals[2] = {64, 80};
+            uint64_t total_q_padded = 0;
+            for (int kbm : kBlockM_vals) {
+                uint64_t padded = uint64_t((total_q + batch_size * kbm + kbm - 1) / kbm) * kbm;
+                total_q_padded = std::max(total_q_padded, padded);
+            }
             int d_rounded = ((head_size + 31) / 32) * 32;
             uint64_t dqaccum_size = total_q_padded * num_heads * d_rounded * sizeof(float);
             // LSE_log2 + dPsum + raw_LSE_temp = 3 buffers of [h * total_q_padded] floats

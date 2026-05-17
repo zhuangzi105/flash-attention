@@ -82,8 +82,8 @@ struct FMHA_kernel_traits {
     // Gmem_tile_mma_bias
     using Gmem_tile_bias = fmha::Gmem_tile_mma_bias<Cta_tile_p>;
 
-    // Gmem_tile_mma_ds
-    using Gmem_tile_ds = fmha::Gmem_tile_mma_ds<Cta_tile_p>;
+    // Gmem_tile_mma_ds (BYTES_PER_ELEMENT=4: write d_bias as float32)
+    using Gmem_tile_ds = fmha::Gmem_tile_mma_ds<Cta_tile_p, 4>;
 
     // // The global memory tile to store the accumulated dK and dV
     // // Hack: we set BYTES_PER_LDGS=32 to emulate the access pattern of dK and dV
