@@ -247,8 +247,12 @@ bool run_fwd_with_bias_mask(Launch_params<FMHA_fprop_params> &launch_params,
                             const bool configure,
                             void* workspace_ptr = nullptr) {
     bool status = true;
-    // SM90 dispatch: arch >= 9 && bias_layout == 2 && hdim == 128 && !configure
-    if (launch_params.params.arch >= 9
+    // SM90 dispatch: arch == 9 && bias_layout == 2 && hdim == 128 && !configure
+    // Note: SM100+ (arch >= 10) falls back to SM80-style kernel because
+    // CUTE_ARCH_MMA_SM90A_ENABLED is not defined for compute_100a
+    // (__CUDA_ARCH_FEAT_SM90_ALL is SM90-only), causing wgmma.fence
+    // runtime assertion failure. SM80 fallback works correctly on SM100+.
+    if (launch_params.params.arch == 9
         && launch_params.params.bias_layout == 2
         && launch_params.params.d == 128
         && !configure) {
@@ -304,8 +308,9 @@ bool run_bwd_with_bias_mask(FMHA_dgrad_params &params,
                             cudaStream_t stream,
                             void* workspace_ptr = nullptr) {
     bool status = true;
-    // SM90 dispatch: arch >= 9 && bias_layout == 2 && hdim == 128
-    if (params.arch >= 9
+    // SM90 dispatch: arch == 9 && bias_layout == 2 && hdim == 128
+    // Note: SM100+ falls back to SM80-style kernel (see run_fwd_with_bias_mask comment)
+    if (params.arch == 9
         && params.bias_layout == 2
         && params.d == 128
         && workspace_ptr != nullptr) {
